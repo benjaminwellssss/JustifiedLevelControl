@@ -13,6 +13,10 @@ namespace ParamIDs
     static const juce::ParameterID refSlot         { "refSlot", 1 };
     static const juce::ParameterID abToggle        { "abToggle", 1 };
     static const juce::ParameterID showTargetZones { "showTargetZones", 1 };
+    static const juce::ParameterID eqEnabled       { "eqEnabled", 1 };
+
+    // Per-band dynamic EQ parameter IDs are indexed, e.g. eqBand ("eqBandFreq", 0) -> "eqBandFreq0"
+    inline juce::String eqBand (const char* base, int band) { return juce::String (base) + juce::String (band); }
 }
 
 //==============================================================================
@@ -234,6 +238,28 @@ public:
         return {};
     }
 
+    //==========================================================================
+    // Dynamic EQ - an optional processing mode (default OFF). When off, the
+    // plugin remains a pure transparent monitor exactly as before. When on,
+    // it actually shapes the signal: each band's gain can react in real time
+    // to its own detected level (an internal-sidechain envelope follower),
+    // similar in spirit to FabFilter Pro-Q's or Ozone's dynamic EQ bands.
+    //==========================================================================
+    static constexpr int numEqBands = 4;
+
+    float getEqBandEffectiveGainDb (int band) const
+    {
+        if (band >= 0 && band < numEqBands)
+            return eqBandEffectiveGainDb[static_cast<size_t> (band)].load (std::memory_order_relaxed);
+        return 0.0f;
+    }
+    float getEqBandDynamicGainDb (int band) const
+    {
+        if (band >= 0 && band < numEqBands)
+            return eqBandDynamicGainDb[static_cast<size_t> (band)].load (std::memory_order_relaxed);
+        return 0.0f;
+    }
+
     juce::AudioProcessorValueTreeState apvts;
 
 private:
@@ -321,6 +347,24 @@ private:
 
     void analyzeReferenceBuffer (int slotIndex);
     static float computeTruePeakOffline (const juce::AudioBuffer<float>& buffer);
+
+    //--- Dynamic EQ engine state ---
+    struct DynamicEqBandState
+    {
+        juce::dsp::IIR::Filter<float> shapingFilterL, shapingFilterR;   // actually applied to the signal
+        juce::dsp::IIR::Filter<float> detectorFilterL, detectorFilterR; // bandpass used only for level detection
+        float envelopeLinear { 0.0f };
+        float currentDynamicGainDb { 0.0f };
+        int samplesSinceCoeffUpdate { 0 };
+    };
+
+    static constexpr int eqCoeffUpdateInterval = 32; // samples between shaping-filter coefficient recomputes (control-rate, not per-sample)
+
+    std::array<DynamicEqBandState, numEqBands> eqBandState;
+    std::array<std::atomic<float>, numEqBands> eqBandEffectiveGainDb { 0.0f, 0.0f, 0.0f, 0.0f };
+    std::array<std::atomic<float>, numEqBands> eqBandDynamicGainDb { 0.0f, 0.0f, 0.0f, 0.0f };
+
+    void processDynamicEq (juce::AudioBuffer<float>& buffer);
 
     juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 

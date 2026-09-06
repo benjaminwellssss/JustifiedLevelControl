@@ -245,65 +245,73 @@ void SpectrumAnalyzerComponent::paint (juce::Graphics& g)
     g.drawText ("0 dB", static_cast<int> (bounds.getWidth()) - 40, static_cast<int> (zeroY) - 14, 35, 14, juce::Justification::right, false);
 
     // Target Placement Zone Overlay Cards (5 Regional Frequency Zones: Sub, Bass, Low Mid, High Mid, Highs)
-    struct TargetZone {
-        float startFreq;
-        float endFreq;
-        juce::Colour borderCol;
-        juce::Colour fillCol;
-        const char* name;
-    };
+    // Hidden entirely when the HIDE preset button toggles showTargetZones off.
+    bool showZones = true;
+    if (auto* p = processor.apvts.getRawParameterValue (ParamIDs::showTargetZones.getParamID()))
+        showZones = p->load() > 0.5f;
 
-    const TargetZone zones[5] = {
-        { 20.0f,   60.0f,    juce::Colour (0xff8800ff), juce::Colour (0x0c8800ff), "SUB" },
-        { 60.0f,   250.0f,   juce::Colour (0xff0066ff), juce::Colour (0x0c0066ff), "BASS" },
-        { 250.0f,  2000.0f,  juce::Colour (0xff65cbe5), juce::Colour (0x0c65cbe5), "LOW MID" },
-        { 2000.0f, 8000.0f,  juce::Colour (0xffffcc00), juce::Colour (0x0cffcc00), "HIGH MID" },
-        { 8000.0f, 20000.0f, juce::Colour (0xffff00ff), juce::Colour (0x0cff00ff), "HIGHS" }
-    };
-
-    uint32_t now = juce::Time::getMillisecondCounter();
-
-    for (size_t i = 0; i < 5; ++i)
+    if (showZones)
     {
-        const auto& zone = zones[i];
-        float normX1 = (std::log10 (zone.startFreq) - minLog) / (maxLog - minLog);
-        float normX2 = (std::log10 (zone.endFreq) - minLog) / (maxLog - minLog);
+        struct TargetZone {
+            float startFreq;
+            float endFreq;
+            juce::Colour borderCol;
+            juce::Colour fillCol;
+            const char* name;
+        };
 
-        float x1 = normX1 * bounds.getWidth();
-        float x2 = normX2 * bounds.getWidth();
+        const TargetZone zones[5] = {
+            { 20.0f,   60.0f,    juce::Colour (0xff8800ff), juce::Colour (0x0c8800ff), "SUB" },
+            { 60.0f,   250.0f,   juce::Colour (0xff0066ff), juce::Colour (0x0c0066ff), "BASS" },
+            { 250.0f,  2000.0f,  juce::Colour (0xff65cbe5), juce::Colour (0x0c65cbe5), "LOW MID" },
+            { 2000.0f, 8000.0f,  juce::Colour (0xffffcc00), juce::Colour (0x0cffcc00), "HIGH MID" },
+            { 8000.0f, 20000.0f, juce::Colour (0xffff00ff), juce::Colour (0x0cff00ff), "HIGHS" }
+        };
 
-        g.setColour (zone.fillCol);
-        g.fillRect (x1, 0.0f, x2 - x1, bounds.getHeight());
+        uint32_t now = juce::Time::getMillisecondCounter();
 
-        g.setColour (zone.borderCol.withAlpha (0.15f));
-        g.drawVerticalLine (juce::roundToInt (x1), 0.0f, bounds.getHeight());
-
-        int badgeW = std::min (static_cast<int> (x2 - x1 - 4), 85);
-        if (badgeW > 25)
+        for (size_t i = 0; i < 5; ++i)
         {
-            // Header badge card background
-            g.setColour (juce::Colour (0xee0b0e17));
-            g.fillRoundedRectangle (x1 + 3.0f, 4.0f, static_cast<float> (badgeW), 28.0f, 3.0f);
+            const auto& zone = zones[i];
+            float normX1 = (std::log10 (zone.startFreq) - minLog) / (maxLog - minLog);
+            float normX2 = (std::log10 (zone.endFreq) - minLog) / (maxLog - minLog);
 
-            g.setColour (zone.borderCol);
-            g.drawRoundedRectangle (x1 + 3.0f, 4.0f, static_cast<float> (badgeW), 28.0f, 3.0f, 1.0f);
+            float x1 = normX1 * bounds.getWidth();
+            float x2 = normX2 * bounds.getWidth();
 
-            // Row 1: Zone Name
-            g.setFont (juce::FontOptions (13.5f, juce::Font::bold));
-            g.setColour (isDark ? juce::Colour (0xff94a3b8) : juce::Colour (0xff64748b));
-            g.drawText (zone.name, static_cast<int> (x1 + 3), 5, badgeW, 11, juce::Justification::centred, false);
+            g.setColour (zone.fillCol);
+            g.fillRect (x1, 0.0f, x2 - x1, bounds.getHeight());
 
-            // Row 2: Regional Peak Readout ("Peak: XX.X")
-            float peakVal = currentBandPeaks[i];
-            juce::String peakStr = (peakVal <= -99.0f) ? "Peak: -INF" : ("Peak: " + juce::String (peakVal, 1));
+            g.setColour (zone.borderCol.withAlpha (0.15f));
+            g.drawVerticalLine (juce::roundToInt (x1), 0.0f, bounds.getHeight());
 
-            // 3-second red peak-hold timer check
-            bool isRed = (now - bandPeakRedTimestampsMs[i] < 3000);
-            juce::Colour textColor = isRed ? juce::Colour (0xffff3355) : (isDark ? juce::Colour (0xff65cbe5) : juce::Colour (0xff0284c7));
+            int badgeW = std::min (static_cast<int> (x2 - x1 - 4), 85);
+            if (badgeW > 25)
+            {
+                // Header badge card background
+                g.setColour (juce::Colour (0xee0b0e17));
+                g.fillRoundedRectangle (x1 + 3.0f, 4.0f, static_cast<float> (badgeW), 28.0f, 3.0f);
 
-            g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
-            g.setColour (textColor);
-            g.drawText (peakStr, static_cast<int> (x1 + 3), 16, badgeW, 14, juce::Justification::centred, false);
+                g.setColour (zone.borderCol);
+                g.drawRoundedRectangle (x1 + 3.0f, 4.0f, static_cast<float> (badgeW), 28.0f, 3.0f, 1.0f);
+
+                // Row 1: Zone Name
+                g.setFont (juce::FontOptions (13.5f, juce::Font::bold));
+                g.setColour (isDark ? juce::Colour (0xff94a3b8) : juce::Colour (0xff64748b));
+                g.drawText (zone.name, static_cast<int> (x1 + 3), 5, badgeW, 11, juce::Justification::centred, false);
+
+                // Row 2: Regional Peak Readout ("Peak: XX.X")
+                float peakVal = currentBandPeaks[i];
+                juce::String peakStr = (peakVal <= -99.0f) ? "Peak: -INF" : ("Peak: " + juce::String (peakVal, 1));
+
+                // 3-second red peak-hold timer check
+                bool isRed = (now - bandPeakRedTimestampsMs[i] < 3000);
+                juce::Colour textColor = isRed ? juce::Colour (0xffff3355) : (isDark ? juce::Colour (0xff65cbe5) : juce::Colour (0xff0284c7));
+
+                g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
+                g.setColour (textColor);
+                g.drawText (peakStr, static_cast<int> (x1 + 3), 16, badgeW, 14, juce::Justification::centred, false);
+            }
         }
     }
 
@@ -1204,6 +1212,10 @@ void ReferenceBarComponent::resized()
 {
     auto bounds = getLocalBounds().reduced (8, 5);
 
+    // Reserve a gutter on the right for the parent editor's overlay
+    // (logo, version text, zoom button - see paintOverChildren()).
+    bounds.removeFromRight (390);
+
     int buttonWidth = 36;
     for (int i = 0; i < 4; ++i)
     {
@@ -1262,9 +1274,14 @@ JustifiedLevelControlAudioProcessorEditor::JustifiedLevelControlAudioProcessorEd
     target14Button.onClick = [setTargetDb]() { setTargetDb (-14.0f); };
     addAndMakeVisible (target14Button);
 
-    target12Button.setTooltip ("Set target to -12 LUFS");
-    target12Button.onClick = [setTargetDb]() { setTargetDb (-12.0f); };
-    addAndMakeVisible (target12Button);
+    hideZonesButton.setClickingTogglesState (true);
+    hideZonesButton.setTooltip ("Hide the frequency target zone overlay on the spectrum analyzer");
+    hideZonesButton.onClick = [this]() {
+        bool zonesHidden = hideZonesButton.getToggleState();
+        if (auto* param = audioProcessor.apvts.getParameter (ParamIDs::showTargetZones.getParamID()))
+            param->setValueNotifyingHost (zonesHidden ? 0.0f : 1.0f);
+    };
+    addAndMakeVisible (hideZonesButton);
 
     target0Button.setTooltip ("Set target to 0 LUFS (Max)");
     target0Button.onClick = [setTargetDb]() { setTargetDb (0.0f); };
@@ -1375,7 +1392,7 @@ void JustifiedLevelControlAudioProcessorEditor::timerCallback()
     if (logoAnimFrame < logoAnimTotalFrames)
     {
         logoAnimFrame++;
-        repaint (getLocalBounds().removeFromBottom (30));
+        repaint (refBarView.getBounds());
     }
 
     // Update Spectrum Engine
@@ -1458,10 +1475,24 @@ void JustifiedLevelControlAudioProcessorEditor::paint (juce::Graphics& g)
     g.setGradientFill (bgGrad);
     g.fillAll();
 
-    // No dedicated header bar anymore - that space now belongs to the
-    // spectrum analyzer's extra headroom above unity. The logo lives in the
-    // bottom-right corner alongside the copyright/version watermark instead.
-    auto bottomRect = getLocalBounds().removeFromBottom (30).reduced (4, 0);
+    // No dedicated header bar anymore - that space belongs to the spectrum
+    // analyzer's extra headroom above unity. The logo, version, and zoom
+    // control live on the reference bar itself (see paintOverChildren()),
+    // so they render cleanly on top of that panel instead of behind it.
+}
+
+void JustifiedLevelControlAudioProcessorEditor::paintOverChildren (juce::Graphics& g)
+{
+    auto barBounds = refBarView.getBounds();
+    if (barBounds.isEmpty())
+        return;
+
+    // Right-hand gutter of the reference bar, reserved by
+    // ReferenceBarComponent::resized() for this overlay: zoom button (drawn
+    // by itself, positioned below), then logo, then version text.
+    auto gutter = barBounds.removeFromRight (390).reduced (10, 3);
+    gutter.removeFromLeft (32 + 10); // space already occupied by zoomButton
+    auto row = gutter;
 
     if (logoSVG != nullptr)
     {
@@ -1469,12 +1500,13 @@ void JustifiedLevelControlAudioProcessorEditor::paint (juce::Graphics& g)
         float svgW = 171.3f;
         float svgH = 22.7f;
 
-        float logoH = 20.0f;
+        // Sized close to the bar's own height (minus a touch of padding)
+        float logoH = static_cast<float> (barBounds.getHeight()) - 6.0f;
         float logoScale = logoH / svgH;
         float logoW = svgW * logoScale;
 
-        float targetX = static_cast<float> (bottomRect.getRight()) - logoW;
-        float targetY = static_cast<float> (bottomRect.getCentreY()) - logoH * 0.5f;
+        float targetX = static_cast<float> (row.getRight()) - logoW;
+        float targetY = static_cast<float> (row.getCentreY()) - logoH * 0.5f;
 
         // Intro animation: fade + slight scale/slide-in on launch. The logo
         // artwork itself is untouched - only its opacity/position animate.
@@ -1490,17 +1522,12 @@ void JustifiedLevelControlAudioProcessorEditor::paint (juce::Graphics& g)
 
         logoSVG->drawWithin (g, juce::Rectangle<float> (scaledX, scaledY, scaledW, scaledH), juce::RectanglePlacement::xRight | juce::RectanglePlacement::yMid, eased);
 
-        bottomRect.removeFromRight (static_cast<int> (logoW) + 16);
+        row.removeFromRight (static_cast<int> (logoW) + 12);
     }
 
-    // Subtle copyright watermark & Version Number, just left of the logo
     g.setFont (juce::FontOptions (11.0f));
-    g.setColour (juce::Colours::grey.withAlpha(0.5f));
-    g.drawText ("v1.0.1", bottomRect, juce::Justification::bottomRight, false);
-
-    g.setFont (juce::FontOptions (15.5f, juce::Font::bold));
-    g.setColour (juce::Colour (0xff64748b));
-    g.drawText ("(c) Benjamin Wells 2026 - BeenWell", bottomRect.withTrimmedRight(40), juce::Justification::bottomRight, false);
+    g.setColour (juce::Colours::grey.withAlpha (0.55f));
+    g.drawText ("v1.0.1", row, juce::Justification::centredRight, false);
 }
 
 void JustifiedLevelControlAudioProcessorEditor::resized()
@@ -1516,14 +1543,15 @@ void JustifiedLevelControlAudioProcessorEditor::resized()
 
     bounds.removeFromRight (10);
 
+    // Top-left to bottom-right reading order: HIDE, 0, -14, CUSTOM
     auto presetBtnArea = rightPaneArea.removeFromTop (38);
     auto row1 = presetBtnArea.removeFromTop (18);
-    target14Button.setBounds (row1.removeFromLeft (rightPaneWidth / 2 - 2));
-    target12Button.setBounds (row1.removeFromRight (rightPaneWidth / 2 - 2));
-    
+    hideZonesButton.setBounds (row1.removeFromLeft (rightPaneWidth / 2 - 2));
+    target0Button.setBounds (row1.removeFromRight (rightPaneWidth / 2 - 2));
+
     presetBtnArea.removeFromTop (2); // gap
     auto row2 = presetBtnArea.removeFromTop (18);
-    target0Button.setBounds (row2.removeFromLeft (rightPaneWidth / 2 - 2));
+    target14Button.setBounds (row2.removeFromLeft (rightPaneWidth / 2 - 2));
     
     auto customRect = row2.removeFromRight (rightPaneWidth / 2 - 2);
     targetCustomButton.setBounds (customRect);
@@ -1550,8 +1578,9 @@ void JustifiedLevelControlAudioProcessorEditor::resized()
     oscilloscopeView.setBounds (oscArea);
     vectorscopeView.setBounds (vecArea);
 
-    // Floating overlay controls - no header bar anymore, so these sit directly
-    // over the spectrum panel's top-right corner instead of consuming layout space.
-    auto overlayArea = getLocalBounds().reduced (14).removeFromTop (30).removeFromRight (32).reduced (0, 3);
-    zoomButton.setBounds (overlayArea);
+    // Zoom button sits in the gutter ReferenceBarComponent::resized() reserves
+    // on the right of the reference bar; logo/version text (paintOverChildren)
+    // fill the rest of that same gutter.
+    auto zoomGutter = refBarView.getBounds().removeFromRight (390).reduced (10, 8);
+    zoomButton.setBounds (zoomGutter.removeFromLeft (32));
 }

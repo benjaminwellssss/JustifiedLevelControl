@@ -354,6 +354,7 @@ public:
     ~JustifiedLevelControlAudioProcessorEditor() override;
 
     void paint (juce::Graphics&) override;
+    void paintOverChildren (juce::Graphics&) override;
     void resized() override;
 
 private:
@@ -376,7 +377,7 @@ private:
 
     // Target Level Selection Buttons
     juce::TextButton target14Button { "-14" };
-    juce::TextButton target12Button { "-12" };
+    juce::TextButton hideZonesButton { "HIDE" };
     juce::TextButton target0Button { "0" };
     juce::TextButton targetCustomButton { "CUSTOM" };
     juce::Label targetCustomLabel { "customLabel", "-6.0" };
