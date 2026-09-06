@@ -1,0 +1,14 @@
+# CMake build directory
+build*/
+.cache/
+CMakeFiles/
+CMakeCache.txt
+JLC_Mac_Export.zip
+
+# IDE / OS
+.vs/
+.idea/
+.DS_Store
+*.suo
+*.user
+*.vst3
