@@ -224,10 +224,10 @@ void SpectrumAnalyzerComponent::paint (juce::Graphics& g)
     }
 
     // Muted Horizontal dB Grid Lines
-    const float dbGrid[] = { 12.0f, -12.0f, -24.0f, -36.0f, -48.0f, -60.0f, -72.0f };
+    const float dbGrid[] = { 20.0f, 6.0f, -12.0f, -24.0f, -36.0f, -48.0f, -60.0f, -72.0f };
     for (float db : dbGrid)
     {
-        float normY = juce::jmap (db, -80.0f, 12.0f, 1.0f, 0.0f);
+        float normY = juce::jmap (db, -80.0f, 20.0f, 1.0f, 0.0f);
         float y = normY * bounds.getHeight();
         g.setColour (isDark ? juce::Colours::white.withAlpha(0.08f) : juce::Colours::black.withAlpha(0.08f));
         g.drawHorizontalLine (juce::roundToInt (y), 0.0f, bounds.getWidth());
@@ -238,7 +238,7 @@ void SpectrumAnalyzerComponent::paint (juce::Graphics& g)
     }
 
     // BluPrint Solid White 0 dB Ceiling Line
-    float zeroY = juce::jmap (0.0f, -80.0f, 12.0f, 1.0f, 0.0f) * bounds.getHeight();
+    float zeroY = juce::jmap (0.0f, -80.0f, 20.0f, 1.0f, 0.0f) * bounds.getHeight();
     g.setColour (juce::Colours::white);
     g.drawHorizontalLine (juce::roundToInt (zeroY), 0.0f, bounds.getWidth());
     g.setFont (juce::FontOptions (15.5f, juce::Font::bold));
@@ -426,7 +426,7 @@ void SpectrumAnalyzerComponent::paint (juce::Graphics& g)
         size_t scopeIndex = static_cast<size_t> (juce::jlimit (0, static_cast<int> (numPoints - 1), static_cast<int> (normX * static_cast<float> (numPoints))));
         float activeLevel = scopeData[scopeIndex];
         float activeY = (1.0f - activeLevel) * bounds.getHeight();
-        float inspectDb = juce::jmap (activeLevel, 0.0f, 1.0f, -80.0f, 12.0f);
+        float inspectDb = juce::jmap (activeLevel, 0.0f, 1.0f, -80.0f, 20.0f);
 
         juce::String noteName = getNoteNameForFrequency (logFreq);
 
@@ -1375,7 +1375,7 @@ void JustifiedLevelControlAudioProcessorEditor::timerCallback()
     if (logoAnimFrame < logoAnimTotalFrames)
     {
         logoAnimFrame++;
-        repaint (getLocalBounds().removeFromTop (58));
+        repaint (getLocalBounds().removeFromBottom (30));
     }
 
     // Update Spectrum Engine
@@ -1426,7 +1426,7 @@ void JustifiedLevelControlAudioProcessorEditor::timerCallback()
     float goalDb = goalLineView.getGoalLevelDb();
 
     // Check if live frequencies peak over target goal line (-80dB to 12dB range mapping)
-    float goalNorm = juce::jlimit (0.0f, 1.0f, juce::jmap (goalDb, -80.0f, 12.0f, 0.0f, 1.0f));
+    float goalNorm = juce::jlimit (0.0f, 1.0f, juce::jmap (goalDb, -80.0f, 20.0f, 0.0f, 1.0f));
     bool freqExceeded = false;
     for (float mag : tempScopeData)
     {
@@ -1458,17 +1458,10 @@ void JustifiedLevelControlAudioProcessorEditor::paint (juce::Graphics& g)
     g.setGradientFill (bgGrad);
     g.fillAll();
 
-    // Outer Padding Frame & Header Panel
-    auto bounds = getLocalBounds().reduced (10);
-
-    // Top Branding Bar Area
-    auto headerArea = bounds.removeFromTop (48);
-    auto headerFloat = headerArea.toFloat();
-
-    g.setColour (juce::Colour (0xffffffff).withAlpha (0.04f));
-    g.fillRoundedRectangle (headerFloat, 12.0f);
-    g.setColour (juce::Colour (0xffffffff).withAlpha (0.15f));
-    g.drawRoundedRectangle (headerFloat, 12.0f, 0.75f);
+    // No dedicated header bar anymore - that space now belongs to the
+    // spectrum analyzer's extra headroom above unity. The logo lives in the
+    // bottom-right corner alongside the copyright/version watermark instead.
+    auto bottomRect = getLocalBounds().removeFromBottom (30).reduced (4, 0);
 
     if (logoSVG != nullptr)
     {
@@ -1476,13 +1469,12 @@ void JustifiedLevelControlAudioProcessorEditor::paint (juce::Graphics& g)
         float svgW = 171.3f;
         float svgH = 22.7f;
 
-        // Scale to fit nicely in the 48px high header
-        float scale = 30.0f / svgH;
-        float drawW = svgW * scale;
-        float drawH = 30.0f;
+        float logoH = 20.0f;
+        float logoScale = logoH / svgH;
+        float logoW = svgW * logoScale;
 
-        float drawX = static_cast<float> (headerArea.getX() + 14);
-        float targetY = static_cast<float> (headerArea.getY()) + (static_cast<float> (headerArea.getHeight()) - drawH) * 0.5f;
+        float targetX = static_cast<float> (bottomRect.getRight()) - logoW;
+        float targetY = static_cast<float> (bottomRect.getCentreY()) - logoH * 0.5f;
 
         // Intro animation: fade + slight scale/slide-in on launch. The logo
         // artwork itself is untouched - only its opacity/position animate.
@@ -1491,17 +1483,17 @@ void JustifiedLevelControlAudioProcessorEditor::paint (juce::Graphics& g)
 
         float drawY = targetY + (1.0f - eased) * 6.0f;
         float animScale = 0.94f + eased * 0.06f;
-        float scaledW = drawW * animScale;
-        float scaledH = drawH * animScale;
-        float scaledX = drawX - (scaledW - drawW) * 0.5f;
-        float scaledY = drawY - (scaledH - drawH) * 0.5f;
+        float scaledW = logoW * animScale;
+        float scaledH = logoH * animScale;
+        float scaledX = targetX - (scaledW - logoW) * 0.5f;
+        float scaledY = drawY - (scaledH - logoH) * 0.5f;
 
-        logoSVG->drawWithin (g, juce::Rectangle<float> (scaledX, scaledY, scaledW, scaledH), juce::RectanglePlacement::xLeft | juce::RectanglePlacement::yMid, eased);
+        logoSVG->drawWithin (g, juce::Rectangle<float> (scaledX, scaledY, scaledW, scaledH), juce::RectanglePlacement::xRight | juce::RectanglePlacement::yMid, eased);
+
+        bottomRect.removeFromRight (static_cast<int> (logoW) + 16);
     }
 
-    // Subtle copyright watermark & Version Number on bottom right
-    auto bottomRect = getLocalBounds().removeFromBottom (16).reduced (4, 0);
-    
+    // Subtle copyright watermark & Version Number, just left of the logo
     g.setFont (juce::FontOptions (11.0f));
     g.setColour (juce::Colours::grey.withAlpha(0.5f));
     g.drawText ("v1.0.1", bottomRect, juce::Justification::bottomRight, false);
@@ -1514,14 +1506,6 @@ void JustifiedLevelControlAudioProcessorEditor::paint (juce::Graphics& g)
 void JustifiedLevelControlAudioProcessorEditor::resized()
 {
     auto bounds = getLocalBounds().reduced (14);
-
-    auto headerArea = bounds.removeFromTop (48);
-
-    auto topRightControls = headerArea.removeFromRight (46).reduced (0, 8);
-
-    zoomButton.setBounds (topRightControls.removeFromRight (32));
-
-    topRightControls.removeFromRight (14);
 
     int refBarHeight = 44;
     refBarView.setBounds (bounds.removeFromBottom (refBarHeight));
@@ -1554,7 +1538,7 @@ void JustifiedLevelControlAudioProcessorEditor::resized()
     auto spectrumArea = centerArea.removeFromTop (topSpectrumHeight);
 
     spectrumView.setBounds (spectrumArea);
-    goalLineView.setBoundsAndRange (spectrumArea, -80.0f, 12.0f);
+    goalLineView.setBoundsAndRange (spectrumArea, -80.0f, 20.0f);
 
     centerArea.removeFromTop (10);
 
@@ -1565,4 +1549,9 @@ void JustifiedLevelControlAudioProcessorEditor::resized()
 
     oscilloscopeView.setBounds (oscArea);
     vectorscopeView.setBounds (vecArea);
+
+    // Floating overlay controls - no header bar anymore, so these sit directly
+    // over the spectrum panel's top-right corner instead of consuming layout space.
+    auto overlayArea = getLocalBounds().reduced (14).removeFromTop (30).removeFromRight (32).reduced (0, 3);
+    zoomButton.setBounds (overlayArea);
 }

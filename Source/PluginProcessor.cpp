@@ -259,7 +259,7 @@ void JustifiedLevelControlAudioProcessor::analyzeReferenceBuffer (int slotIndex)
             int fftBin = juce::jlimit (0, numBins - 1, static_cast<int> (logFreq / sampleRateHalved * static_cast<float> (numBins)));
             float avgMagnitude = static_cast<float> (sumMagnitude[static_cast<size_t> (fftBin)] / static_cast<double> (frameCount));
             float levelDb = juce::Decibels::gainToDecibels (avgMagnitude, -100.0f);
-            float normLevel = juce::jlimit (0.0f, 1.0f, juce::jmap (levelDb, -80.0f, 12.0f, 0.0f, 1.0f));
+            float normLevel = juce::jlimit (0.0f, 1.0f, juce::jmap (levelDb, -80.0f, 20.0f, 0.0f, 1.0f));
 
             metrics.spectrum[static_cast<size_t> (i)] = normLevel;
         }
@@ -622,7 +622,7 @@ void JustifiedLevelControlAudioProcessor::drawNextFrameOfSpectrum()
         float normMag = magnitude / (static_cast<float> (fftSize) * 0.25f);
         float levelDb = juce::Decibels::gainToDecibels (normMag, -100.0f);
 
-        float normLevel = juce::jmap (levelDb, -80.0f, 12.0f, 0.0f, 1.0f);
+        float normLevel = juce::jmap (levelDb, -80.0f, 20.0f, 0.0f, 1.0f);
         normLevel = juce::jlimit (0.0f, 1.0f, normLevel);
 
         if (normLevel > scopeData[static_cast<size_t> (i)])
