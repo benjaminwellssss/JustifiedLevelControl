@@ -65,7 +65,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout JustifiedLevelControlAudioPr
 
     params.push_back (std::make_unique<juce::AudioParameterBool> (
         ParamIDs::showTargetZones,
-        "Show Placement Target Zones",
+        "Show Goal Lines",
         true
     ));
 

@@ -245,73 +245,65 @@ void SpectrumAnalyzerComponent::paint (juce::Graphics& g)
     g.drawText ("0 dB", static_cast<int> (bounds.getWidth()) - 40, static_cast<int> (zeroY) - 14, 35, 14, juce::Justification::right, false);
 
     // Target Placement Zone Overlay Cards (5 Regional Frequency Zones: Sub, Bass, Low Mid, High Mid, Highs)
-    // Hidden entirely when the HIDE preset button toggles showTargetZones off.
-    bool showZones = true;
-    if (auto* p = processor.apvts.getRawParameterValue (ParamIDs::showTargetZones.getParamID()))
-        showZones = p->load() > 0.5f;
+    struct TargetZone {
+        float startFreq;
+        float endFreq;
+        juce::Colour borderCol;
+        juce::Colour fillCol;
+        const char* name;
+    };
 
-    if (showZones)
+    const TargetZone zones[5] = {
+        { 20.0f,   60.0f,    juce::Colour (0xff8800ff), juce::Colour (0x0c8800ff), "SUB" },
+        { 60.0f,   250.0f,   juce::Colour (0xff0066ff), juce::Colour (0x0c0066ff), "BASS" },
+        { 250.0f,  2000.0f,  juce::Colour (0xff65cbe5), juce::Colour (0x0c65cbe5), "LOW MID" },
+        { 2000.0f, 8000.0f,  juce::Colour (0xffffcc00), juce::Colour (0x0cffcc00), "HIGH MID" },
+        { 8000.0f, 20000.0f, juce::Colour (0xffff00ff), juce::Colour (0x0cff00ff), "HIGHS" }
+    };
+
+    uint32_t now = juce::Time::getMillisecondCounter();
+
+    for (size_t i = 0; i < 5; ++i)
     {
-        struct TargetZone {
-            float startFreq;
-            float endFreq;
-            juce::Colour borderCol;
-            juce::Colour fillCol;
-            const char* name;
-        };
+        const auto& zone = zones[i];
+        float normX1 = (std::log10 (zone.startFreq) - minLog) / (maxLog - minLog);
+        float normX2 = (std::log10 (zone.endFreq) - minLog) / (maxLog - minLog);
 
-        const TargetZone zones[5] = {
-            { 20.0f,   60.0f,    juce::Colour (0xff8800ff), juce::Colour (0x0c8800ff), "SUB" },
-            { 60.0f,   250.0f,   juce::Colour (0xff0066ff), juce::Colour (0x0c0066ff), "BASS" },
-            { 250.0f,  2000.0f,  juce::Colour (0xff65cbe5), juce::Colour (0x0c65cbe5), "LOW MID" },
-            { 2000.0f, 8000.0f,  juce::Colour (0xffffcc00), juce::Colour (0x0cffcc00), "HIGH MID" },
-            { 8000.0f, 20000.0f, juce::Colour (0xffff00ff), juce::Colour (0x0cff00ff), "HIGHS" }
-        };
+        float x1 = normX1 * bounds.getWidth();
+        float x2 = normX2 * bounds.getWidth();
 
-        uint32_t now = juce::Time::getMillisecondCounter();
+        g.setColour (zone.fillCol);
+        g.fillRect (x1, 0.0f, x2 - x1, bounds.getHeight());
 
-        for (size_t i = 0; i < 5; ++i)
+        g.setColour (zone.borderCol.withAlpha (0.15f));
+        g.drawVerticalLine (juce::roundToInt (x1), 0.0f, bounds.getHeight());
+
+        int badgeW = std::min (static_cast<int> (x2 - x1 - 4), 85);
+        if (badgeW > 25)
         {
-            const auto& zone = zones[i];
-            float normX1 = (std::log10 (zone.startFreq) - minLog) / (maxLog - minLog);
-            float normX2 = (std::log10 (zone.endFreq) - minLog) / (maxLog - minLog);
+            // Header badge card background
+            g.setColour (juce::Colour (0xee0b0e17));
+            g.fillRoundedRectangle (x1 + 3.0f, 4.0f, static_cast<float> (badgeW), 28.0f, 3.0f);
 
-            float x1 = normX1 * bounds.getWidth();
-            float x2 = normX2 * bounds.getWidth();
+            g.setColour (zone.borderCol);
+            g.drawRoundedRectangle (x1 + 3.0f, 4.0f, static_cast<float> (badgeW), 28.0f, 3.0f, 1.0f);
 
-            g.setColour (zone.fillCol);
-            g.fillRect (x1, 0.0f, x2 - x1, bounds.getHeight());
+            // Row 1: Zone Name
+            g.setFont (juce::FontOptions (13.5f, juce::Font::bold));
+            g.setColour (isDark ? juce::Colour (0xff94a3b8) : juce::Colour (0xff64748b));
+            g.drawText (zone.name, static_cast<int> (x1 + 3), 5, badgeW, 11, juce::Justification::centred, false);
 
-            g.setColour (zone.borderCol.withAlpha (0.15f));
-            g.drawVerticalLine (juce::roundToInt (x1), 0.0f, bounds.getHeight());
+            // Row 2: Regional Peak Readout ("Peak: XX.X")
+            float peakVal = currentBandPeaks[i];
+            juce::String peakStr = (peakVal <= -99.0f) ? "Peak: -INF" : ("Peak: " + juce::String (peakVal, 1));
 
-            int badgeW = std::min (static_cast<int> (x2 - x1 - 4), 85);
-            if (badgeW > 25)
-            {
-                // Header badge card background
-                g.setColour (juce::Colour (0xee0b0e17));
-                g.fillRoundedRectangle (x1 + 3.0f, 4.0f, static_cast<float> (badgeW), 28.0f, 3.0f);
+            // 3-second red peak-hold timer check
+            bool isRed = (now - bandPeakRedTimestampsMs[i] < 3000);
+            juce::Colour textColor = isRed ? juce::Colour (0xffff3355) : (isDark ? juce::Colour (0xff65cbe5) : juce::Colour (0xff0284c7));
 
-                g.setColour (zone.borderCol);
-                g.drawRoundedRectangle (x1 + 3.0f, 4.0f, static_cast<float> (badgeW), 28.0f, 3.0f, 1.0f);
-
-                // Row 1: Zone Name
-                g.setFont (juce::FontOptions (13.5f, juce::Font::bold));
-                g.setColour (isDark ? juce::Colour (0xff94a3b8) : juce::Colour (0xff64748b));
-                g.drawText (zone.name, static_cast<int> (x1 + 3), 5, badgeW, 11, juce::Justification::centred, false);
-
-                // Row 2: Regional Peak Readout ("Peak: XX.X")
-                float peakVal = currentBandPeaks[i];
-                juce::String peakStr = (peakVal <= -99.0f) ? "Peak: -INF" : ("Peak: " + juce::String (peakVal, 1));
-
-                // 3-second red peak-hold timer check
-                bool isRed = (now - bandPeakRedTimestampsMs[i] < 3000);
-                juce::Colour textColor = isRed ? juce::Colour (0xffff3355) : (isDark ? juce::Colour (0xff65cbe5) : juce::Colour (0xff0284c7));
-
-                g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
-                g.setColour (textColor);
-                g.drawText (peakStr, static_cast<int> (x1 + 3), 16, badgeW, 14, juce::Justification::centred, false);
-            }
+            g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
+            g.setColour (textColor);
+            g.drawText (peakStr, static_cast<int> (x1 + 3), 16, badgeW, 14, juce::Justification::centred, false);
         }
     }
 
@@ -595,42 +587,46 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
     g.strokePath (wavePath, juce::PathStrokeType (1.5f));
 
     // Synchronized Target Goal Line on Oscilloscope dynamically scaled with peak auto-zoom multiplier
-    float goalLinear = juce::Decibels::decibelsToGain (goalDb);
-    float goalAmp = goalLinear * normGain;
-    float rawYTop = centerY - goalAmp;
-    float rawYBottom = centerY + goalAmp;
+    // (hidden by the HIDE button - showGoal)
+    if (showGoal)
+    {
+        float goalLinear = juce::Decibels::decibelsToGain (goalDb);
+        float goalAmp = goalLinear * normGain;
+        float rawYTop = centerY - goalAmp;
+        float rawYBottom = centerY + goalAmp;
 
-    float goalYTop = juce::jlimit (waveArea.getY() + 1.0f, waveArea.getBottom() - 1.0f, rawYTop);
-    float goalYBottom = juce::jlimit (waveArea.getY() + 1.0f, waveArea.getBottom() - 1.0f, rawYBottom);
+        float goalYTop = juce::jlimit (waveArea.getY() + 1.0f, waveArea.getBottom() - 1.0f, rawYTop);
+        float goalYBottom = juce::jlimit (waveArea.getY() + 1.0f, waveArea.getBottom() - 1.0f, rawYBottom);
 
-    g.setColour (isDark ? juce::Colour (0xcc00ffff) : juce::Colour (0xcc0284c7));
-    juce::Path goalPath;
-    goalPath.startNewSubPath (waveArea.getX(), goalYTop);
-    goalPath.lineTo (waveArea.getRight() - 65.0f, goalYTop);
-    goalPath.startNewSubPath (waveArea.getX(), goalYBottom);
-    goalPath.lineTo (waveArea.getRight() - 65.0f, goalYBottom);
+        g.setColour (isDark ? juce::Colour (0xcc00ffff) : juce::Colour (0xcc0284c7));
+        juce::Path goalPath;
+        goalPath.startNewSubPath (waveArea.getX(), goalYTop);
+        goalPath.lineTo (waveArea.getRight() - 65.0f, goalYTop);
+        goalPath.startNewSubPath (waveArea.getX(), goalYBottom);
+        goalPath.lineTo (waveArea.getRight() - 65.0f, goalYBottom);
 
-    juce::PathStrokeType goalStroke (1.5f);
-    float dash[] = { 6.0f, 4.0f };
-    goalStroke.createDashedStroke (goalPath, goalPath, dash, 2);
-    g.strokePath (goalPath, goalStroke);
+        juce::PathStrokeType goalStroke (1.5f);
+        float dash[] = { 6.0f, 4.0f };
+        goalStroke.createDashedStroke (goalPath, goalPath, dash, 2);
+        g.strokePath (goalPath, goalStroke);
 
-    juce::String goalLabel = (rawYTop < waveArea.getY()) ? "[^ TARGET: " + juce::String (goalDb, 1) + "]" : "TARGET: " + juce::String (goalDb, 1) + " LUFS";
-    juce::Font badgeFont (juce::FontOptions (15.5f, juce::Font::bold));
-    g.setFont (badgeFont);
+        juce::String goalLabel = (rawYTop < waveArea.getY()) ? "[^ TARGET: " + juce::String (goalDb, 1) + "]" : "TARGET: " + juce::String (goalDb, 1) + " LUFS";
+        juce::Font badgeFont (juce::FontOptions (15.5f, juce::Font::bold));
+        g.setFont (badgeFont);
 
-    int textWidth = badgeFont.getStringWidth (goalLabel) + 16;
-    float textY = juce::jlimit (waveArea.getY() + 2.0f, waveArea.getBottom() - 22.0f, goalYTop - 10.0f);
-    int targetBadgeX = static_cast<int> (waveArea.getRight()) - textWidth - 10;
+        int textWidth = badgeFont.getStringWidth (goalLabel) + 16;
+        float textY = juce::jlimit (waveArea.getY() + 2.0f, waveArea.getBottom() - 22.0f, goalYTop - 10.0f);
+        int targetBadgeX = static_cast<int> (waveArea.getRight()) - textWidth - 10;
 
-    juce::Colour activeColour = isDark ? juce::Colour (0xff00ffff) : juce::Colour (0xff0284c7);
+        juce::Colour activeColour = isDark ? juce::Colour (0xff00ffff) : juce::Colour (0xff0284c7);
 
-    g.setColour (isDark ? juce::Colour (0xff0a111c) : juce::Colour (0xfff8fafc));
-    g.fillRoundedRectangle (static_cast<float> (targetBadgeX), textY, static_cast<float> (textWidth), 20.0f, 4.0f);
+        g.setColour (isDark ? juce::Colour (0xff0a111c) : juce::Colour (0xfff8fafc));
+        g.fillRoundedRectangle (static_cast<float> (targetBadgeX), textY, static_cast<float> (textWidth), 20.0f, 4.0f);
 
-    g.setColour (activeColour);
-    g.drawRoundedRectangle (static_cast<float> (targetBadgeX), textY, static_cast<float> (textWidth), 20.0f, 4.0f, 1.2f);
-    g.drawText (goalLabel, targetBadgeX, static_cast<int> (textY), textWidth, 20, juce::Justification::centred, false);
+        g.setColour (activeColour);
+        g.drawRoundedRectangle (static_cast<float> (targetBadgeX), textY, static_cast<float> (textWidth), 20.0f, 4.0f, 1.2f);
+        g.drawText (goalLabel, targetBadgeX, static_cast<int> (textY), textWidth, 20, juce::Justification::centred, false);
+    }
 
     // Interactive Hover Inspector (Text sticks to cursor, Dot sticks to waveform curve)
     if (mouseInside && mousePos.x >= waveArea.getX() && mousePos.x <= waveArea.getRight())
@@ -1081,11 +1077,14 @@ void VerticalLufsMeterComponent::paint (juce::Graphics& g)
         g.drawHorizontalLine (juce::roundToInt (tickY), meterBarArea.getX(), meterBarArea.getRight());
     }
 
-    // Synchronized Target Goal Line on VU Meter across both bars
-    float goalNormY = getNormYFromDb (goalDb);
-    float goalY = meterBarArea.getBottom() - goalNormY * meterBarArea.getHeight();
-    g.setColour (juce::Colour (0xff00ffff));
-    g.drawHorizontalLine (juce::roundToInt (goalY), meterBarArea.getX() - 2.0f, meterBarArea.getRight() + 2.0f);
+    // Synchronized Target Goal Line on VU Meter across both bars (hidden by the HIDE button)
+    if (showGoal)
+    {
+        float goalNormY = getNormYFromDb (goalDb);
+        float goalY = meterBarArea.getBottom() - goalNormY * meterBarArea.getHeight();
+        g.setColour (juce::Colour (0xff00ffff));
+        g.drawHorizontalLine (juce::roundToInt (goalY), meterBarArea.getX() - 2.0f, meterBarArea.getRight() + 2.0f);
+    }
 
     // Highest Peak Indicator Line across both bars
     float peakNorm = getNormYFromDb (highestPeakVal);
@@ -1214,7 +1213,7 @@ void ReferenceBarComponent::resized()
 
     // Reserve a gutter on the right for the parent editor's overlay
     // (logo, version text, zoom button - see paintOverChildren()).
-    bounds.removeFromRight (390);
+    bounds.removeFromRight (430);
 
     int buttonWidth = 36;
     for (int i = 0; i < 4; ++i)
@@ -1230,6 +1229,210 @@ void ReferenceBarComponent::resized()
 
     bounds.removeFromLeft (18);
     readoutArea = bounds.reduced (0, 2);
+}
+
+//==============================================================================
+// DynamicEqPanel Implementation
+//==============================================================================
+DynamicEqPanel::DynamicEqPanel (JustifiedLevelControlAudioProcessor& p)
+    : processor (p)
+{
+    masterEnableSwitch.setTooltip ("Engage the dynamic EQ - when off, the plugin is a pure transparent monitor");
+    masterEnableAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
+        processor.apvts, ParamIDs::eqEnabled.getParamID(), masterEnableSwitch);
+    addAndMakeVisible (masterEnableSwitch);
+
+    auto setupRotary = [this] (juce::Slider& s, const juce::String& tooltip)
+    {
+        s.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+        s.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+        s.setPopupDisplayEnabled (true, true, this);
+        s.setTooltip (tooltip);
+        s.setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xff65cbe5));
+        s.setColour (juce::Slider::rotarySliderOutlineColourId, juce::Colour (0xff2a3548));
+        s.setColour (juce::Slider::thumbColourId, juce::Colours::white);
+        addAndMakeVisible (s);
+    };
+
+    for (int i = 0; i < JustifiedLevelControlAudioProcessor::numEqBands; ++i)
+    {
+        auto& band = bands[static_cast<size_t> (i)];
+        juce::String bn = "Band " + juce::String (i + 1);
+
+        setupRotary (band.freqSlider,      bn + " Frequency");
+        setupRotary (band.gainSlider,      bn + " Static Gain");
+        setupRotary (band.qSlider,         bn + " Q");
+        setupRotary (band.thresholdSlider, bn + " Threshold");
+        setupRotary (band.rangeSlider,     bn + " Range");
+        setupRotary (band.attackSlider,    bn + " Attack");
+        setupRotary (band.releaseSlider,   bn + " Release");
+
+        band.freqAttach      = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (processor.apvts, ParamIDs::eqBand ("eqBandFreq", i), band.freqSlider);
+        band.gainAttach      = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (processor.apvts, ParamIDs::eqBand ("eqBandGain", i), band.gainSlider);
+        band.qAttach         = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (processor.apvts, ParamIDs::eqBand ("eqBandQ", i), band.qSlider);
+        band.thresholdAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (processor.apvts, ParamIDs::eqBand ("eqBandThreshold", i), band.thresholdSlider);
+        band.rangeAttach     = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (processor.apvts, ParamIDs::eqBand ("eqBandRange", i), band.rangeSlider);
+        band.attackAttach    = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (processor.apvts, ParamIDs::eqBand ("eqBandAttack", i), band.attackSlider);
+        band.releaseAttach   = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (processor.apvts, ParamIDs::eqBand ("eqBandRelease", i), band.releaseSlider);
+
+        band.dynamicOnButton.setTooltip (bn + " Dynamic On/Off");
+        band.dynamicOnAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (processor.apvts, ParamIDs::eqBand ("eqBandDynamicOn", i), band.dynamicOnButton);
+        addAndMakeVisible (band.dynamicOnButton);
+
+        band.enabledButton.setTooltip (bn + " Enabled");
+        band.enabledAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (processor.apvts, ParamIDs::eqBand ("eqBandEnabled", i), band.enabledButton);
+        addAndMakeVisible (band.enabledButton);
+    }
+
+    setSize (600, 400);
+    startTimerHz (30);
+}
+
+DynamicEqPanel::~DynamicEqPanel()
+{
+    stopTimer();
+}
+
+void DynamicEqPanel::timerCallback()
+{
+    repaint();
+}
+
+void DynamicEqPanel::paint (juce::Graphics& g)
+{
+    g.fillAll (juce::Colour (0xff14171f));
+
+    auto bounds = getLocalBounds().reduced (10);
+    bounds.removeFromTop (24 + 8); // master row + gap
+
+    auto curveArea = bounds.removeFromTop (110).toFloat();
+
+    g.setColour (juce::Colour (0xffffffff).withAlpha (0.04f));
+    g.fillRoundedRectangle (curveArea, 8.0f);
+    g.setColour (juce::Colour (0xffffffff).withAlpha (0.12f));
+    g.drawRoundedRectangle (curveArea, 8.0f, 0.75f);
+
+    const float minLog = std::log10 (20.0f);
+    const float maxLog = std::log10 (20000.0f);
+    const float dbRange = 24.0f; // +/-24dB curve display range
+    const double sr = 44100.0;   // display-only response curve; independent of the live sample rate
+
+    g.setColour (juce::Colours::white.withAlpha (0.15f));
+    g.drawHorizontalLine (juce::roundToInt (curveArea.getCentreY()), curveArea.getX(), curveArea.getRight());
+
+    // Combined response curve (dB summed across bands = correct for cascaded biquads)
+    juce::Path curve;
+    constexpr int numPoints = 128;
+    for (int i = 0; i <= numPoints; ++i)
+    {
+        float normX = static_cast<float> (i) / static_cast<float> (numPoints);
+        double freq = std::pow (10.0, static_cast<double> (minLog) + normX * (static_cast<double> (maxLog) - minLog));
+
+        float totalDb = 0.0f;
+        for (int b = 0; b < JustifiedLevelControlAudioProcessor::numEqBands; ++b)
+        {
+            bool bandEnabled = processor.apvts.getRawParameterValue (ParamIDs::eqBand ("eqBandEnabled", b))->load() > 0.5f;
+            if (!bandEnabled)
+                continue;
+
+            float bandFreq = juce::jlimit (20.0f, 20000.0f, processor.apvts.getRawParameterValue (ParamIDs::eqBand ("eqBandFreq", b))->load());
+            float bandQ = juce::jlimit (0.1f, 10.0f, processor.apvts.getRawParameterValue (ParamIDs::eqBand ("eqBandQ", b))->load());
+            float effGain = processor.getEqBandEffectiveGainDb (b);
+
+            auto coeffs = juce::dsp::IIR::Coefficients<float>::makePeakFilter (sr, bandFreq, bandQ, juce::Decibels::decibelsToGain (effGain));
+            totalDb += static_cast<float> (juce::Decibels::gainToDecibels (coeffs->getMagnitudeForFrequency (freq, sr)));
+        }
+
+        float x = curveArea.getX() + normX * curveArea.getWidth();
+        float normY = juce::jlimit (0.0f, 1.0f, juce::jmap (totalDb, -dbRange, dbRange, 1.0f, 0.0f));
+        float y = curveArea.getY() + normY * curveArea.getHeight();
+
+        if (i == 0) curve.startNewSubPath (x, y);
+        else curve.lineTo (x, y);
+    }
+
+    g.setColour (juce::Colour (0xff00f0ff));
+    g.strokePath (curve, juce::PathStrokeType (2.0f));
+
+    // Per-band markers: position = freq/effective gain, colour = active gain reduction
+    for (int b = 0; b < JustifiedLevelControlAudioProcessor::numEqBands; ++b)
+    {
+        bool bandEnabled = processor.apvts.getRawParameterValue (ParamIDs::eqBand ("eqBandEnabled", b))->load() > 0.5f;
+        float bandFreq = juce::jlimit (20.0f, 20000.0f, processor.apvts.getRawParameterValue (ParamIDs::eqBand ("eqBandFreq", b))->load());
+        float dynGain = processor.getEqBandDynamicGainDb (b);
+        float effGain = processor.getEqBandEffectiveGainDb (b);
+
+        float normX = (std::log10 (bandFreq) - minLog) / (maxLog - minLog);
+        float x = curveArea.getX() + normX * curveArea.getWidth();
+        float normY = juce::jlimit (0.0f, 1.0f, juce::jmap (effGain, -dbRange, dbRange, 1.0f, 0.0f));
+        float y = curveArea.getY() + normY * curveArea.getHeight();
+
+        juce::Colour dotColour = !bandEnabled ? juce::Colours::grey
+                                : (std::abs (dynGain) > 0.3f ? juce::Colour (0xffff3355) : juce::Colour (0xfff97316));
+        g.setColour (dotColour);
+        g.fillEllipse (x - 4.0f, y - 4.0f, 8.0f, 8.0f);
+
+        g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+        g.setColour (isMouseButtonDown() ? dotColour : dotColour.withAlpha (0.9f));
+        g.drawText (juce::String (b + 1), juce::Rectangle<float> (x - 8.0f, y - 20.0f, 16.0f, 14.0f), juce::Justification::centred, false);
+    }
+
+    // Band column headers (freq + live gain-reduction readout)
+    int bandWidth = bounds.getWidth() / JustifiedLevelControlAudioProcessor::numEqBands;
+    for (int b = 0; b < JustifiedLevelControlAudioProcessor::numEqBands; ++b)
+    {
+        auto col = juce::Rectangle<int> (bounds.getX() + b * bandWidth, bounds.getY(), bandWidth, bounds.getHeight()).reduced (6, 0);
+        float dynGain = processor.getEqBandDynamicGainDb (b);
+
+        juce::String label = "BAND " + juce::String (b + 1);
+        if (std::abs (dynGain) > 0.1f)
+            label += "   " + juce::String (dynGain, 1) + " dB";
+
+        g.setFont (juce::FontOptions (11.5f, juce::Font::bold));
+        g.setColour (std::abs (dynGain) > 0.3f ? juce::Colour (0xffff3355) : juce::Colour (0xff94a3b8));
+        g.drawText (label, col.withHeight (14), juce::Justification::centredLeft, false);
+    }
+}
+
+void DynamicEqPanel::resized()
+{
+    auto bounds = getLocalBounds().reduced (10);
+
+    masterEnableSwitch.setBounds (bounds.removeFromTop (24));
+    bounds.removeFromTop (8);
+
+    bounds.removeFromTop (110); // curve area - drawn only, no child components
+    bounds.removeFromTop (10);
+
+    int bandWidth = bounds.getWidth() / JustifiedLevelControlAudioProcessor::numEqBands;
+    for (int i = 0; i < JustifiedLevelControlAudioProcessor::numEqBands; ++i)
+    {
+        auto col = bounds.removeFromLeft (bandWidth).reduced (6, 0);
+        auto& band = bands[static_cast<size_t> (i)];
+
+        col.removeFromTop (16); // room for the "BAND N" label drawn in paint()
+
+        auto toggleRow = col.removeFromTop (20);
+        band.enabledButton.setBounds (toggleRow.removeFromLeft (toggleRow.getWidth() / 2));
+        band.dynamicOnButton.setBounds (toggleRow);
+        col.removeFromTop (4);
+
+        auto freqRow = col.removeFromTop (46);
+        band.freqSlider.setBounds (freqRow.withSizeKeepingCentre (46, 46));
+        col.removeFromTop (2);
+
+        auto row2 = col.removeFromTop (44);
+        band.gainSlider.setBounds (row2.removeFromLeft (row2.getWidth() / 2));
+        band.qSlider.setBounds (row2);
+
+        auto row3 = col.removeFromTop (44);
+        band.thresholdSlider.setBounds (row3.removeFromLeft (row3.getWidth() / 2));
+        band.rangeSlider.setBounds (row3);
+
+        auto row4 = col.removeFromTop (44);
+        band.attackSlider.setBounds (row4.removeFromLeft (row4.getWidth() / 2));
+        band.releaseSlider.setBounds (row4);
+    }
 }
 
 //==============================================================================
@@ -1274,14 +1477,14 @@ JustifiedLevelControlAudioProcessorEditor::JustifiedLevelControlAudioProcessorEd
     target14Button.onClick = [setTargetDb]() { setTargetDb (-14.0f); };
     addAndMakeVisible (target14Button);
 
-    hideZonesButton.setClickingTogglesState (true);
-    hideZonesButton.setTooltip ("Hide the frequency target zone overlay on the spectrum analyzer");
-    hideZonesButton.onClick = [this]() {
-        bool zonesHidden = hideZonesButton.getToggleState();
+    hideGoalLinesButton.setClickingTogglesState (true);
+    hideGoalLinesButton.setTooltip ("Hide the goal line on the spectrum, oscilloscope, and LUFS meter");
+    hideGoalLinesButton.onClick = [this]() {
+        bool zonesHidden = hideGoalLinesButton.getToggleState();
         if (auto* param = audioProcessor.apvts.getParameter (ParamIDs::showTargetZones.getParamID()))
             param->setValueNotifyingHost (zonesHidden ? 0.0f : 1.0f);
     };
-    addAndMakeVisible (hideZonesButton);
+    addAndMakeVisible (hideGoalLinesButton);
 
     target0Button.setTooltip ("Set target to 0 LUFS (Max)");
     target0Button.onClick = [setTargetDb]() { setTargetDb (0.0f); };
@@ -1357,6 +1560,14 @@ JustifiedLevelControlAudioProcessorEditor::JustifiedLevelControlAudioProcessorEd
     };
     addAndMakeVisible (zoomButton);
 
+    // Dynamic EQ toggle - opens the control panel; the switch glyph reflects
+    // whether the EQ is actually engaged, but engaging it happens via the
+    // switch inside the panel, not this click, so it never silently starts
+    // altering the audio.
+    eqButton.setTooltip ("Dynamic EQ - click to show controls");
+    eqButton.onClick = [this]() { showEqPanel(); };
+    addAndMakeVisible (eqButton);
+
     setSize (1200, 820);
     setResizable (true, true);
     setResizeLimits (600, 410, 1200, 820);
@@ -1382,8 +1593,16 @@ void JustifiedLevelControlAudioProcessorEditor::updateTheme (bool dark)
     goalLineView.setDarkMode (dark);
     refBarView.setDarkMode (dark);
     zoomButton.setDarkMode (dark);
+    eqButton.setDarkMode (dark);
 
     repaint();
+}
+
+void JustifiedLevelControlAudioProcessorEditor::showEqPanel()
+{
+    auto panel = std::make_unique<DynamicEqPanel> (audioProcessor);
+    panel->setSize (600, 400);
+    juce::CallOutBox::launchAsynchronously (std::move (panel), eqButton.getScreenBounds(), nullptr);
 }
 
 void JustifiedLevelControlAudioProcessorEditor::timerCallback()
@@ -1394,6 +1613,21 @@ void JustifiedLevelControlAudioProcessorEditor::timerCallback()
         logoAnimFrame++;
         repaint (refBarView.getBounds());
     }
+
+    // HIDE button - shows/hides the light-blue goal line on every meter
+    // (spectrum, oscilloscope, LUFS meter) without touching anything else.
+    bool showGoalLines = true;
+    if (auto* p = audioProcessor.apvts.getRawParameterValue (ParamIDs::showTargetZones.getParamID()))
+        showGoalLines = p->load() > 0.5f;
+    goalLineView.setVisible (showGoalLines);
+    oscilloscopeView.setShowGoalLine (showGoalLines);
+    lufsMeterView.setShowGoalLine (showGoalLines);
+
+    // Reflect whether the dynamic EQ is actually engaged on its header button
+    bool eqEngaged = false;
+    if (auto* p = audioProcessor.apvts.getRawParameterValue (ParamIDs::eqEnabled.getParamID()))
+        eqEngaged = p->load() > 0.5f;
+    eqButton.setEngaged (eqEngaged);
 
     // Update Spectrum Engine
     audioProcessor.getScopeData (tempScopeData.data(), tempScopeData.size());
@@ -1488,10 +1722,10 @@ void JustifiedLevelControlAudioProcessorEditor::paintOverChildren (juce::Graphic
         return;
 
     // Right-hand gutter of the reference bar, reserved by
-    // ReferenceBarComponent::resized() for this overlay: zoom button (drawn
-    // by itself, positioned below), then logo, then version text.
-    auto gutter = barBounds.removeFromRight (390).reduced (10, 3);
-    gutter.removeFromLeft (32 + 10); // space already occupied by zoomButton
+    // ReferenceBarComponent::resized() for this overlay: eq + zoom buttons
+    // (drawn by themselves, positioned below), then logo, then version text.
+    auto gutter = barBounds.removeFromRight (430).reduced (10, 3);
+    gutter.removeFromLeft (34 + 6 + 32 + 10); // space already occupied by eqButton + zoomButton
     auto row = gutter;
 
     if (logoSVG != nullptr)
@@ -1546,7 +1780,7 @@ void JustifiedLevelControlAudioProcessorEditor::resized()
     // Top-left to bottom-right reading order: HIDE, 0, -14, CUSTOM
     auto presetBtnArea = rightPaneArea.removeFromTop (38);
     auto row1 = presetBtnArea.removeFromTop (18);
-    hideZonesButton.setBounds (row1.removeFromLeft (rightPaneWidth / 2 - 2));
+    hideGoalLinesButton.setBounds (row1.removeFromLeft (rightPaneWidth / 2 - 2));
     target0Button.setBounds (row1.removeFromRight (rightPaneWidth / 2 - 2));
 
     presetBtnArea.removeFromTop (2); // gap
@@ -1578,9 +1812,11 @@ void JustifiedLevelControlAudioProcessorEditor::resized()
     oscilloscopeView.setBounds (oscArea);
     vectorscopeView.setBounds (vecArea);
 
-    // Zoom button sits in the gutter ReferenceBarComponent::resized() reserves
-    // on the right of the reference bar; logo/version text (paintOverChildren)
-    // fill the rest of that same gutter.
-    auto zoomGutter = refBarView.getBounds().removeFromRight (390).reduced (10, 8);
-    zoomButton.setBounds (zoomGutter.removeFromLeft (32));
+    // EQ + zoom buttons sit in the gutter ReferenceBarComponent::resized()
+    // reserves on the right of the reference bar; logo/version text
+    // (paintOverChildren) fill the rest of that same gutter.
+    auto controlsGutter = refBarView.getBounds().removeFromRight (430).reduced (10, 8);
+    eqButton.setBounds (controlsGutter.removeFromLeft (34));
+    controlsGutter.removeFromLeft (6);
+    zoomButton.setBounds (controlsGutter.removeFromLeft (32));
 }
