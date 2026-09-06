@@ -96,7 +96,7 @@ void GoalLineComponent::paint (juce::Graphics& g)
     g.strokePath (linePath, stroke);
 
     juce::String labelText = (isExceeded ? "OVER TARGET: " : "TARGET: ") + juce::String (currentGoalDb, 1) + " LUFS";
-    juce::Font badgeFont (juce::FontOptions (13.0f, juce::Font::bold));
+    juce::Font badgeFont (juce::FontOptions (14.0f, juce::Font::bold));
     g.setFont (badgeFont);
 
     int textWidth = badgeFont.getStringWidth (labelText) + 16;
@@ -200,8 +200,8 @@ void SpectrumAnalyzerComponent::paint (juce::Graphics& g)
     g.drawRoundedRectangle (bounds, 12.0f, 0.75f);
     
     // Card Header Title (Bottom Left)
-    g.setFont (juce::FontOptions (14.5f, juce::Font::bold));
-    g.setColour (juce::Colour (0xff64748b));
+    g.setFont (juce::FontOptions (15.5f, juce::Font::bold));
+    g.setColour (juce::Colour (0xff94a3b8));
     g.drawText ("SPECTRUM ANALYZER", 12, static_cast<int>(bounds.getHeight()) - 26, 200, 20, juce::Justification::left, false);
 
     const float minLog = std::log10 (20.0f);
@@ -218,8 +218,8 @@ void SpectrumAnalyzerComponent::paint (juce::Graphics& g)
         g.drawVerticalLine (juce::roundToInt (x), 0.0f, bounds.getHeight());
 
         juce::String text = (f >= 1000.0f) ? juce::String (f / 1000.0f, 0) + "k" : juce::String (static_cast<int> (f));
-        g.setFont (juce::FontOptions (11.5f, juce::Font::bold));
-        g.setColour (juce::Colour (0xff64748b));
+        g.setFont (juce::FontOptions (13.5f, juce::Font::bold));
+        g.setColour (juce::Colour (0xff94a3b8));
         g.drawText (text, static_cast<int> (x) - 15, static_cast<int> (bounds.getHeight()) - 18, 30, 14, juce::Justification::centred, false);
     }
 
@@ -232,8 +232,8 @@ void SpectrumAnalyzerComponent::paint (juce::Graphics& g)
         g.setColour (isDark ? juce::Colours::white.withAlpha(0.08f) : juce::Colours::black.withAlpha(0.08f));
         g.drawHorizontalLine (juce::roundToInt (y), 0.0f, bounds.getWidth());
 
-        g.setColour (juce::Colour (0xff64748b));
-        g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+        g.setColour (juce::Colour (0xff94a3b8));
+        g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
         g.drawText (juce::String (static_cast<int> (db)), static_cast<int> (bounds.getWidth()) - 35, static_cast<int> (y) - 10, 30, 12, juce::Justification::right, false);
     }
 
@@ -241,7 +241,7 @@ void SpectrumAnalyzerComponent::paint (juce::Graphics& g)
     float zeroY = juce::jmap (0.0f, -80.0f, 12.0f, 1.0f, 0.0f) * bounds.getHeight();
     g.setColour (juce::Colours::white);
     g.drawHorizontalLine (juce::roundToInt (zeroY), 0.0f, bounds.getWidth());
-    g.setFont (juce::FontOptions (14.5f, juce::Font::bold));
+    g.setFont (juce::FontOptions (15.5f, juce::Font::bold));
     g.drawText ("0 dB", static_cast<int> (bounds.getWidth()) - 40, static_cast<int> (zeroY) - 14, 35, 14, juce::Justification::right, false);
 
     // Target Placement Zone Overlay Cards (5 Regional Frequency Zones: Sub, Bass, Low Mid, High Mid, Highs)
@@ -289,8 +289,8 @@ void SpectrumAnalyzerComponent::paint (juce::Graphics& g)
             g.drawRoundedRectangle (x1 + 3.0f, 4.0f, static_cast<float> (badgeW), 28.0f, 3.0f, 1.0f);
 
             // Row 1: Zone Name
-            g.setFont (juce::FontOptions (11.5f, juce::Font::bold));
-            g.setColour (isDark ? juce::Colour (0xff94a3b8) : juce::Colour (0xff475569));
+            g.setFont (juce::FontOptions (13.5f, juce::Font::bold));
+            g.setColour (isDark ? juce::Colour (0xff94a3b8) : juce::Colour (0xff64748b));
             g.drawText (zone.name, static_cast<int> (x1 + 3), 5, badgeW, 11, juce::Justification::centred, false);
 
             // Row 2: Regional Peak Readout ("Peak: XX.X")
@@ -301,7 +301,7 @@ void SpectrumAnalyzerComponent::paint (juce::Graphics& g)
             bool isRed = (now - bandPeakRedTimestampsMs[i] < 3000);
             juce::Colour textColor = isRed ? juce::Colour (0xffff3355) : (isDark ? juce::Colour (0xff65cbe5) : juce::Colour (0xff0284c7));
 
-            g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+            g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
             g.setColour (textColor);
             g.drawText (peakStr, static_cast<int> (x1 + 3), 16, badgeW, 14, juce::Justification::centred, false);
         }
@@ -451,7 +451,7 @@ void SpectrumAnalyzerComponent::paint (juce::Graphics& g)
                                 + "  |  " + juce::String (inspectDb, 1) + " dB"
                                 + (noteName.isNotEmpty() ? "  |  " + noteName : "");
 
-        g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+        g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
         int badgeW = g.getCurrentFont().getStringWidth (infoText) + 18;
         int badgeX = juce::jlimit (4, static_cast<int> (bounds.getWidth()) - badgeW - 4, mousePos.x + 14);
         int badgeY = juce::jlimit (4, static_cast<int> (bounds.getHeight()) - 28, mousePos.y - 24);
@@ -505,8 +505,8 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
     g.drawRoundedRectangle (bounds, 12.0f, 0.75f);
 
     // Card Header Title
-    g.setFont (juce::FontOptions (14.5f, juce::Font::bold));
-    g.setColour (isDark ? juce::Colour (0xff64748b) : juce::Colour (0xff475569));
+    g.setFont (juce::FontOptions (15.5f, juce::Font::bold));
+    g.setColour (isDark ? juce::Colour (0xff94a3b8) : juce::Colour (0xff64748b));
     g.drawText ("OSCILLOSCOPE", 12, 6, 200, 16, juce::Justification::left, false);
 
     // Strictly bounded inner waveform frame (excluding header title & card padding)
@@ -608,7 +608,7 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
     g.strokePath (goalPath, goalStroke);
 
     juce::String goalLabel = (rawYTop < waveArea.getY()) ? "[^ TARGET: " + juce::String (goalDb, 1) + "]" : "TARGET: " + juce::String (goalDb, 1) + " LUFS";
-    juce::Font badgeFont (juce::FontOptions (14.5f, juce::Font::bold));
+    juce::Font badgeFont (juce::FontOptions (15.5f, juce::Font::bold));
     g.setFont (badgeFont);
 
     int textWidth = badgeFont.getStringWidth (goalLabel) + 16;
@@ -656,7 +656,7 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
 
         // Text badge sticking directly to user's mouse cursor
         juce::String infoText = "LEVEL: " + (sampleDb <= -99.0f ? "-INF" : juce::String (sampleDb, 1) + " dB");
-        g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+        g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
         int badgeW = g.getCurrentFont().getStringWidth (infoText) + 18;
         int badgeX = juce::jlimit (4, static_cast<int> (bounds.getWidth()) - badgeW - 4, mousePos.x + 14);
         int badgeY = juce::jlimit (4, static_cast<int> (bounds.getHeight()) - 28, mousePos.y - 24);
@@ -741,8 +741,8 @@ void VectorscopeComponent::paint (juce::Graphics& g)
     g.drawRoundedRectangle (bounds, 12.0f, 0.75f);
 
     // Card Header Title
-    g.setFont (juce::FontOptions (14.5f, juce::Font::bold));
-    g.setColour (isDark ? juce::Colour (0xff64748b) : juce::Colour (0xff475569));
+    g.setFont (juce::FontOptions (15.5f, juce::Font::bold));
+    g.setColour (isDark ? juce::Colour (0xff94a3b8) : juce::Colour (0xff64748b));
     g.drawText ("VECTORSCOPE", 12, 6, 120, 16, juce::Justification::left, false);
 
     // Grid Radial & Diagonal Guidelines for Half-Moon Layout
@@ -820,7 +820,7 @@ void VectorscopeComponent::paint (juce::Graphics& g)
     g.setColour (currentPhaseCorrelation < 0.0f ? juce::Colour (0xffff3355) : juce::Colour (0xff65cbe5));
     g.fillRoundedRectangle (corrArea.withWidth (fillW), 2.5f);
 
-    g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+    g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
     g.setColour (juce::Colours::white);
     g.drawText ("PHASE CORRELATION: " + juce::String (currentPhaseCorrelation, 2), static_cast<int> (corrArea.getX()), static_cast<int> (corrArea.getY()), static_cast<int> (corrArea.getWidth()), static_cast<int> (corrArea.getHeight()), juce::Justification::centred, false);
 }
@@ -955,20 +955,20 @@ void VerticalLufsMeterComponent::paint (juce::Graphics& g)
 
     // Current Peak (300ms transient decay, max of L/R)
     float maxCurrentPeak = std::max (currentPeakValL, currentPeakValR);
-    g.setFont (juce::FontOptions (11.5f, juce::Font::bold));
-    g.setColour (isDark ? juce::Colour (0xff64748b) : juce::Colour (0xff475569));
+    g.setFont (juce::FontOptions (13.5f, juce::Font::bold));
+    g.setColour (isDark ? juce::Colour (0xff94a3b8) : juce::Colour (0xff64748b));
     g.drawText ("CURRENT", static_cast<int> (leftPeakArea.getX()), static_cast<int> (leftPeakArea.getY()) + 3, static_cast<int> (leftPeakArea.getWidth()), 11, juce::Justification::centred, false);
     
-    g.setFont (juce::FontOptions (14.5f, juce::Font::bold));
+    g.setFont (juce::FontOptions (15.5f, juce::Font::bold));
     g.setColour (maxCurrentPeak > 0.0f ? juce::Colour (0xffff3355) : juce::Colour (0xff65cbe5));
     g.drawText (maxCurrentPeak <= -99.0f ? "-INF" : juce::String (maxCurrentPeak, 1), static_cast<int> (leftPeakArea.getX()), static_cast<int> (leftPeakArea.getY()) + 17, static_cast<int> (leftPeakArea.getWidth()), 16, juce::Justification::centred, false);
 
     // True Peak (4x oversampled inter-sample peak, indefinite hold)
-    g.setFont (juce::FontOptions (11.5f, juce::Font::bold));
-    g.setColour (isDark ? juce::Colour (0xff64748b) : juce::Colour (0xff475569));
+    g.setFont (juce::FontOptions (13.5f, juce::Font::bold));
+    g.setColour (isDark ? juce::Colour (0xff94a3b8) : juce::Colour (0xff64748b));
     g.drawText ("TRUE PEAK", static_cast<int> (rightPeakArea.getX()), static_cast<int> (rightPeakArea.getY()) + 3, static_cast<int> (rightPeakArea.getWidth()), 11, juce::Justification::centred, false);
     
-    g.setFont (juce::FontOptions (14.5f, juce::Font::bold));
+    g.setFont (juce::FontOptions (15.5f, juce::Font::bold));
     g.setColour (highestPeakVal > 0.0f ? juce::Colour (0xffff3355) : (isDark ? juce::Colours::white : juce::Colour (0xff0f172a)));
     g.drawText (highestPeakVal <= -99.0f ? "-INF" : juce::String (highestPeakVal, 1), static_cast<int> (rightPeakArea.getX()), static_cast<int> (rightPeakArea.getY()) + 17, static_cast<int> (rightPeakArea.getWidth()), 16, juce::Justification::centred, false);
 
@@ -982,21 +982,21 @@ void VerticalLufsMeterComponent::paint (juce::Graphics& g)
     auto rightLufsArea = lufsRow;
 
     // Short LUFS
-    g.setFont (juce::FontOptions (11.5f, juce::Font::bold));
-    g.setColour (isDark ? juce::Colour (0xff64748b) : juce::Colour (0xff475569));
+    g.setFont (juce::FontOptions (13.5f, juce::Font::bold));
+    g.setColour (isDark ? juce::Colour (0xff94a3b8) : juce::Colour (0xff64748b));
     g.drawText ("SHORT LUFS", static_cast<int> (leftLufsArea.getX()), static_cast<int> (leftLufsArea.getY()) + 4, static_cast<int> (leftLufsArea.getWidth()), 11, juce::Justification::centred, false);
     
     bool isExceedingGoal = (currentLufs > goalDb || maxCurrentPeak > goalDb);
-    g.setFont (juce::FontOptions (14.5f, juce::Font::bold));
+    g.setFont (juce::FontOptions (15.5f, juce::Font::bold));
     g.setColour (isExceedingGoal ? juce::Colour (0xffff3355) : juce::Colour (0xff65cbe5));
     g.drawText (cachedCurrentLufsText, static_cast<int> (leftLufsArea.getX()), static_cast<int> (leftLufsArea.getY()) + 18, static_cast<int> (leftLufsArea.getWidth()), 16, juce::Justification::centred, false);
 
     // Integrated LUFS
-    g.setFont (juce::FontOptions (11.5f, juce::Font::bold));
-    g.setColour (isDark ? juce::Colour (0xff64748b) : juce::Colour (0xff475569));
+    g.setFont (juce::FontOptions (13.5f, juce::Font::bold));
+    g.setColour (isDark ? juce::Colour (0xff94a3b8) : juce::Colour (0xff64748b));
     g.drawText ("INTEG LUFS", static_cast<int> (rightLufsArea.getX()), static_cast<int> (rightLufsArea.getY()) + 4, static_cast<int> (rightLufsArea.getWidth()), 11, juce::Justification::centred, false);
     
-    g.setFont (juce::FontOptions (14.5f, juce::Font::bold));
+    g.setFont (juce::FontOptions (15.5f, juce::Font::bold));
     g.setColour (isDark ? juce::Colours::white : juce::Colour (0xff0f172a));
     g.drawText (integratedLufs <= -99.0f ? "-INF" : juce::String (integratedLufs, 1), static_cast<int> (rightLufsArea.getX()), static_cast<int> (rightLufsArea.getY()) + 18, static_cast<int> (rightLufsArea.getWidth()), 16, juce::Justification::centred, false);
 
@@ -1007,7 +1007,7 @@ void VerticalLufsMeterComponent::paint (juce::Graphics& g)
 
     // Draw Logic Pro X Style Non-Linear Numerical Scale Ticks
     const float tickDbs[] = { 6.0f, 0.0f, -5.0f, -10.0f, -18.0f, -30.0f, -50.0f };
-    g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+    g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
 
     for (float tickDb : tickDbs)
     {
@@ -1020,7 +1020,7 @@ void VerticalLufsMeterComponent::paint (juce::Graphics& g)
 
         // Numerical Label
         juce::String labelStr = (tickDb > 0.0f) ? ("+" + juce::String (static_cast<int> (tickDb))) : juce::String (static_cast<int> (tickDb));
-        g.setColour ((tickDb == 0.0f || tickDb == 6.0f) ? (isDark ? juce::Colours::white : juce::Colour (0xff0f172a)) : (isDark ? juce::Colour (0xff64748b) : juce::Colour (0xff475569)));
+        g.setColour ((tickDb == 0.0f || tickDb == 6.0f) ? (isDark ? juce::Colours::white : juce::Colour (0xff0f172a)) : (isDark ? juce::Colour (0xff94a3b8) : juce::Colour (0xff64748b)));
         g.drawText (labelStr, static_cast<int> (tickArea.getX()), static_cast<int> (tickY - 6.0f), static_cast<int> (tickArea.getWidth() - 6.0f), 12, juce::Justification::right, false);
     }
 
@@ -1170,19 +1170,19 @@ void ReferenceBarComponent::paint (juce::Graphics& g)
     if (metrics.loaded)
     {
         auto nameArea = area.removeFromTop (area.getHeight() / 2);
-        g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+        g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
         g.setColour (isDark ? juce::Colours::white : juce::Colour (0xff0f172a));
         g.drawText ("REF " + juce::String (selectedSlot + 1) + ":  " + metrics.fileName, nameArea, juce::Justification::centredLeft, true);
 
         juce::String statsStr = juce::String (metrics.integratedLufs, 1) + " LUFS   ·   TP " + juce::String (metrics.truePeakDb, 1) + " dB";
-        g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
+        g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
         g.setColour (juce::Colour (0xfff97316)); // BluPrint Copper Orange - matches the reference curve elsewhere
         g.drawText (statsStr, area, juce::Justification::centredLeft, true);
     }
     else
     {
-        g.setFont (juce::FontOptions (12.5f, juce::Font::bold));
-        g.setColour (isDark ? juce::Colour (0xff64748b) : juce::Colour (0xff475569));
+        g.setFont (juce::FontOptions (13.5f, juce::Font::bold));
+        g.setColour (isDark ? juce::Colour (0xff94a3b8) : juce::Colour (0xff64748b));
         g.drawText ("SLOT " + juce::String (selectedSlot + 1) + " EMPTY — LOAD A REFERENCE TRACK", readoutArea, juce::Justification::centredLeft, true);
     }
 }
@@ -1502,12 +1502,12 @@ void JustifiedLevelControlAudioProcessorEditor::paint (juce::Graphics& g)
     // Subtle copyright watermark & Version Number on bottom right
     auto bottomRect = getLocalBounds().removeFromBottom (16).reduced (4, 0);
     
-    g.setFont (juce::FontOptions (10.0f));
+    g.setFont (juce::FontOptions (11.0f));
     g.setColour (juce::Colours::grey.withAlpha(0.5f));
     g.drawText ("v1.0.1", bottomRect, juce::Justification::bottomRight, false);
 
-    g.setFont (juce::FontOptions (14.5f, juce::Font::bold));
-    g.setColour (juce::Colour (0xff475569));
+    g.setFont (juce::FontOptions (15.5f, juce::Font::bold));
+    g.setColour (juce::Colour (0xff64748b));
     g.drawText ("(c) Benjamin Wells 2026 - BeenWell", bottomRect.withTrimmedRight(40), juce::Justification::bottomRight, false);
 }
 
