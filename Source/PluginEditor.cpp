@@ -1213,7 +1213,7 @@ void ReferenceBarComponent::resized()
 
     // Reserve a gutter on the right for the parent editor's overlay
     // (logo, version text, zoom button - see paintOverChildren()).
-    bounds.removeFromRight (430);
+    bounds.removeFromRight (390);
 
     int buttonWidth = 36;
     for (int i = 0; i < 4; ++i)
@@ -1229,210 +1229,6 @@ void ReferenceBarComponent::resized()
 
     bounds.removeFromLeft (18);
     readoutArea = bounds.reduced (0, 2);
-}
-
-//==============================================================================
-// DynamicEqPanel Implementation
-//==============================================================================
-DynamicEqPanel::DynamicEqPanel (JustifiedLevelControlAudioProcessor& p)
-    : processor (p)
-{
-    masterEnableSwitch.setTooltip ("Engage the dynamic EQ - when off, the plugin is a pure transparent monitor");
-    masterEnableAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
-        processor.apvts, ParamIDs::eqEnabled.getParamID(), masterEnableSwitch);
-    addAndMakeVisible (masterEnableSwitch);
-
-    auto setupRotary = [this] (juce::Slider& s, const juce::String& tooltip)
-    {
-        s.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-        s.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
-        s.setPopupDisplayEnabled (true, true, this);
-        s.setTooltip (tooltip);
-        s.setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xff65cbe5));
-        s.setColour (juce::Slider::rotarySliderOutlineColourId, juce::Colour (0xff2a3548));
-        s.setColour (juce::Slider::thumbColourId, juce::Colours::white);
-        addAndMakeVisible (s);
-    };
-
-    for (int i = 0; i < JustifiedLevelControlAudioProcessor::numEqBands; ++i)
-    {
-        auto& band = bands[static_cast<size_t> (i)];
-        juce::String bn = "Band " + juce::String (i + 1);
-
-        setupRotary (band.freqSlider,      bn + " Frequency");
-        setupRotary (band.gainSlider,      bn + " Static Gain");
-        setupRotary (band.qSlider,         bn + " Q");
-        setupRotary (band.thresholdSlider, bn + " Threshold");
-        setupRotary (band.rangeSlider,     bn + " Range");
-        setupRotary (band.attackSlider,    bn + " Attack");
-        setupRotary (band.releaseSlider,   bn + " Release");
-
-        band.freqAttach      = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (processor.apvts, ParamIDs::eqBand ("eqBandFreq", i), band.freqSlider);
-        band.gainAttach      = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (processor.apvts, ParamIDs::eqBand ("eqBandGain", i), band.gainSlider);
-        band.qAttach         = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (processor.apvts, ParamIDs::eqBand ("eqBandQ", i), band.qSlider);
-        band.thresholdAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (processor.apvts, ParamIDs::eqBand ("eqBandThreshold", i), band.thresholdSlider);
-        band.rangeAttach     = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (processor.apvts, ParamIDs::eqBand ("eqBandRange", i), band.rangeSlider);
-        band.attackAttach    = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (processor.apvts, ParamIDs::eqBand ("eqBandAttack", i), band.attackSlider);
-        band.releaseAttach   = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (processor.apvts, ParamIDs::eqBand ("eqBandRelease", i), band.releaseSlider);
-
-        band.dynamicOnButton.setTooltip (bn + " Dynamic On/Off");
-        band.dynamicOnAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (processor.apvts, ParamIDs::eqBand ("eqBandDynamicOn", i), band.dynamicOnButton);
-        addAndMakeVisible (band.dynamicOnButton);
-
-        band.enabledButton.setTooltip (bn + " Enabled");
-        band.enabledAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (processor.apvts, ParamIDs::eqBand ("eqBandEnabled", i), band.enabledButton);
-        addAndMakeVisible (band.enabledButton);
-    }
-
-    setSize (600, 400);
-    startTimerHz (30);
-}
-
-DynamicEqPanel::~DynamicEqPanel()
-{
-    stopTimer();
-}
-
-void DynamicEqPanel::timerCallback()
-{
-    repaint();
-}
-
-void DynamicEqPanel::paint (juce::Graphics& g)
-{
-    g.fillAll (juce::Colour (0xff14171f));
-
-    auto bounds = getLocalBounds().reduced (10);
-    bounds.removeFromTop (24 + 8); // master row + gap
-
-    auto curveArea = bounds.removeFromTop (110).toFloat();
-
-    g.setColour (juce::Colour (0xffffffff).withAlpha (0.04f));
-    g.fillRoundedRectangle (curveArea, 8.0f);
-    g.setColour (juce::Colour (0xffffffff).withAlpha (0.12f));
-    g.drawRoundedRectangle (curveArea, 8.0f, 0.75f);
-
-    const float minLog = std::log10 (20.0f);
-    const float maxLog = std::log10 (20000.0f);
-    const float dbRange = 24.0f; // +/-24dB curve display range
-    const double sr = 44100.0;   // display-only response curve; independent of the live sample rate
-
-    g.setColour (juce::Colours::white.withAlpha (0.15f));
-    g.drawHorizontalLine (juce::roundToInt (curveArea.getCentreY()), curveArea.getX(), curveArea.getRight());
-
-    // Combined response curve (dB summed across bands = correct for cascaded biquads)
-    juce::Path curve;
-    constexpr int numPoints = 128;
-    for (int i = 0; i <= numPoints; ++i)
-    {
-        float normX = static_cast<float> (i) / static_cast<float> (numPoints);
-        double freq = std::pow (10.0, static_cast<double> (minLog) + normX * (static_cast<double> (maxLog) - minLog));
-
-        float totalDb = 0.0f;
-        for (int b = 0; b < JustifiedLevelControlAudioProcessor::numEqBands; ++b)
-        {
-            bool bandEnabled = processor.apvts.getRawParameterValue (ParamIDs::eqBand ("eqBandEnabled", b))->load() > 0.5f;
-            if (!bandEnabled)
-                continue;
-
-            float bandFreq = juce::jlimit (20.0f, 20000.0f, processor.apvts.getRawParameterValue (ParamIDs::eqBand ("eqBandFreq", b))->load());
-            float bandQ = juce::jlimit (0.1f, 10.0f, processor.apvts.getRawParameterValue (ParamIDs::eqBand ("eqBandQ", b))->load());
-            float effGain = processor.getEqBandEffectiveGainDb (b);
-
-            auto coeffs = juce::dsp::IIR::Coefficients<float>::makePeakFilter (sr, bandFreq, bandQ, juce::Decibels::decibelsToGain (effGain));
-            totalDb += static_cast<float> (juce::Decibels::gainToDecibels (coeffs->getMagnitudeForFrequency (freq, sr)));
-        }
-
-        float x = curveArea.getX() + normX * curveArea.getWidth();
-        float normY = juce::jlimit (0.0f, 1.0f, juce::jmap (totalDb, -dbRange, dbRange, 1.0f, 0.0f));
-        float y = curveArea.getY() + normY * curveArea.getHeight();
-
-        if (i == 0) curve.startNewSubPath (x, y);
-        else curve.lineTo (x, y);
-    }
-
-    g.setColour (juce::Colour (0xff00f0ff));
-    g.strokePath (curve, juce::PathStrokeType (2.0f));
-
-    // Per-band markers: position = freq/effective gain, colour = active gain reduction
-    for (int b = 0; b < JustifiedLevelControlAudioProcessor::numEqBands; ++b)
-    {
-        bool bandEnabled = processor.apvts.getRawParameterValue (ParamIDs::eqBand ("eqBandEnabled", b))->load() > 0.5f;
-        float bandFreq = juce::jlimit (20.0f, 20000.0f, processor.apvts.getRawParameterValue (ParamIDs::eqBand ("eqBandFreq", b))->load());
-        float dynGain = processor.getEqBandDynamicGainDb (b);
-        float effGain = processor.getEqBandEffectiveGainDb (b);
-
-        float normX = (std::log10 (bandFreq) - minLog) / (maxLog - minLog);
-        float x = curveArea.getX() + normX * curveArea.getWidth();
-        float normY = juce::jlimit (0.0f, 1.0f, juce::jmap (effGain, -dbRange, dbRange, 1.0f, 0.0f));
-        float y = curveArea.getY() + normY * curveArea.getHeight();
-
-        juce::Colour dotColour = !bandEnabled ? juce::Colours::grey
-                                : (std::abs (dynGain) > 0.3f ? juce::Colour (0xffff3355) : juce::Colour (0xfff97316));
-        g.setColour (dotColour);
-        g.fillEllipse (x - 4.0f, y - 4.0f, 8.0f, 8.0f);
-
-        g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
-        g.setColour (isMouseButtonDown() ? dotColour : dotColour.withAlpha (0.9f));
-        g.drawText (juce::String (b + 1), juce::Rectangle<float> (x - 8.0f, y - 20.0f, 16.0f, 14.0f), juce::Justification::centred, false);
-    }
-
-    // Band column headers (freq + live gain-reduction readout)
-    int bandWidth = bounds.getWidth() / JustifiedLevelControlAudioProcessor::numEqBands;
-    for (int b = 0; b < JustifiedLevelControlAudioProcessor::numEqBands; ++b)
-    {
-        auto col = juce::Rectangle<int> (bounds.getX() + b * bandWidth, bounds.getY(), bandWidth, bounds.getHeight()).reduced (6, 0);
-        float dynGain = processor.getEqBandDynamicGainDb (b);
-
-        juce::String label = "BAND " + juce::String (b + 1);
-        if (std::abs (dynGain) > 0.1f)
-            label += "   " + juce::String (dynGain, 1) + " dB";
-
-        g.setFont (juce::FontOptions (11.5f, juce::Font::bold));
-        g.setColour (std::abs (dynGain) > 0.3f ? juce::Colour (0xffff3355) : juce::Colour (0xff94a3b8));
-        g.drawText (label, col.withHeight (14), juce::Justification::centredLeft, false);
-    }
-}
-
-void DynamicEqPanel::resized()
-{
-    auto bounds = getLocalBounds().reduced (10);
-
-    masterEnableSwitch.setBounds (bounds.removeFromTop (24));
-    bounds.removeFromTop (8);
-
-    bounds.removeFromTop (110); // curve area - drawn only, no child components
-    bounds.removeFromTop (10);
-
-    int bandWidth = bounds.getWidth() / JustifiedLevelControlAudioProcessor::numEqBands;
-    for (int i = 0; i < JustifiedLevelControlAudioProcessor::numEqBands; ++i)
-    {
-        auto col = bounds.removeFromLeft (bandWidth).reduced (6, 0);
-        auto& band = bands[static_cast<size_t> (i)];
-
-        col.removeFromTop (16); // room for the "BAND N" label drawn in paint()
-
-        auto toggleRow = col.removeFromTop (20);
-        band.enabledButton.setBounds (toggleRow.removeFromLeft (toggleRow.getWidth() / 2));
-        band.dynamicOnButton.setBounds (toggleRow);
-        col.removeFromTop (4);
-
-        auto freqRow = col.removeFromTop (46);
-        band.freqSlider.setBounds (freqRow.withSizeKeepingCentre (46, 46));
-        col.removeFromTop (2);
-
-        auto row2 = col.removeFromTop (44);
-        band.gainSlider.setBounds (row2.removeFromLeft (row2.getWidth() / 2));
-        band.qSlider.setBounds (row2);
-
-        auto row3 = col.removeFromTop (44);
-        band.thresholdSlider.setBounds (row3.removeFromLeft (row3.getWidth() / 2));
-        band.rangeSlider.setBounds (row3);
-
-        auto row4 = col.removeFromTop (44);
-        band.attackSlider.setBounds (row4.removeFromLeft (row4.getWidth() / 2));
-        band.releaseSlider.setBounds (row4);
-    }
 }
 
 //==============================================================================
@@ -1560,14 +1356,6 @@ JustifiedLevelControlAudioProcessorEditor::JustifiedLevelControlAudioProcessorEd
     };
     addAndMakeVisible (zoomButton);
 
-    // Dynamic EQ toggle - opens the control panel; the switch glyph reflects
-    // whether the EQ is actually engaged, but engaging it happens via the
-    // switch inside the panel, not this click, so it never silently starts
-    // altering the audio.
-    eqButton.setTooltip ("Dynamic EQ - click to show controls");
-    eqButton.onClick = [this]() { showEqPanel(); };
-    addAndMakeVisible (eqButton);
-
     setSize (1200, 820);
     setResizable (true, true);
     setResizeLimits (600, 410, 1200, 820);
@@ -1593,16 +1381,8 @@ void JustifiedLevelControlAudioProcessorEditor::updateTheme (bool dark)
     goalLineView.setDarkMode (dark);
     refBarView.setDarkMode (dark);
     zoomButton.setDarkMode (dark);
-    eqButton.setDarkMode (dark);
 
     repaint();
-}
-
-void JustifiedLevelControlAudioProcessorEditor::showEqPanel()
-{
-    auto panel = std::make_unique<DynamicEqPanel> (audioProcessor);
-    panel->setSize (600, 400);
-    juce::CallOutBox::launchAsynchronously (std::move (panel), eqButton.getScreenBounds(), nullptr);
 }
 
 void JustifiedLevelControlAudioProcessorEditor::timerCallback()
@@ -1622,12 +1402,6 @@ void JustifiedLevelControlAudioProcessorEditor::timerCallback()
     goalLineView.setVisible (showGoalLines);
     oscilloscopeView.setShowGoalLine (showGoalLines);
     lufsMeterView.setShowGoalLine (showGoalLines);
-
-    // Reflect whether the dynamic EQ is actually engaged on its header button
-    bool eqEngaged = false;
-    if (auto* p = audioProcessor.apvts.getRawParameterValue (ParamIDs::eqEnabled.getParamID()))
-        eqEngaged = p->load() > 0.5f;
-    eqButton.setEngaged (eqEngaged);
 
     // Update Spectrum Engine
     audioProcessor.getScopeData (tempScopeData.data(), tempScopeData.size());
@@ -1722,10 +1496,10 @@ void JustifiedLevelControlAudioProcessorEditor::paintOverChildren (juce::Graphic
         return;
 
     // Right-hand gutter of the reference bar, reserved by
-    // ReferenceBarComponent::resized() for this overlay: eq + zoom buttons
-    // (drawn by themselves, positioned below), then logo, then version text.
-    auto gutter = barBounds.removeFromRight (430).reduced (10, 3);
-    gutter.removeFromLeft (34 + 6 + 32 + 10); // space already occupied by eqButton + zoomButton
+    // ReferenceBarComponent::resized() for this overlay: zoom button (drawn
+    // by itself, positioned below), then logo, then version text.
+    auto gutter = barBounds.removeFromRight (390).reduced (10, 3);
+    gutter.removeFromLeft (32 + 10); // space already occupied by zoomButton
     auto row = gutter;
 
     if (logoSVG != nullptr)
@@ -1812,11 +1586,9 @@ void JustifiedLevelControlAudioProcessorEditor::resized()
     oscilloscopeView.setBounds (oscArea);
     vectorscopeView.setBounds (vecArea);
 
-    // EQ + zoom buttons sit in the gutter ReferenceBarComponent::resized()
-    // reserves on the right of the reference bar; logo/version text
-    // (paintOverChildren) fill the rest of that same gutter.
-    auto controlsGutter = refBarView.getBounds().removeFromRight (430).reduced (10, 8);
-    eqButton.setBounds (controlsGutter.removeFromLeft (34));
-    controlsGutter.removeFromLeft (6);
-    zoomButton.setBounds (controlsGutter.removeFromLeft (32));
+    // Zoom button sits in the gutter ReferenceBarComponent::resized() reserves
+    // on the right of the reference bar; logo/version text (paintOverChildren)
+    // fill the rest of that same gutter.
+    auto zoomGutter = refBarView.getBounds().removeFromRight (390).reduced (10, 8);
+    zoomButton.setBounds (zoomGutter.removeFromLeft (32));
 }

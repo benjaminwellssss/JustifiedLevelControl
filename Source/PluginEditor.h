@@ -265,62 +265,6 @@ private:
 };
 
 //==============================================================================
-// EQ Toggle Button - an on/off switch icon. Clicking it opens/closes the
-// Dynamic EQ control panel; the switch glyph reflects whether the EQ is
-// actually engaged (a separate switch inside the panel controls that, so a
-// single click here never silently starts altering the audio).
-//==============================================================================
-class EqToggleButton : public juce::Button
-{
-public:
-    EqToggleButton() : juce::Button ("eqToggle") {}
-
-    void setDarkMode (bool dark) { isDark = dark; repaint(); }
-    void setEngaged (bool engaged) { if (isEngaged != engaged) { isEngaged = engaged; repaint(); } }
-
-    void paintButton (juce::Graphics& g, bool isMouseOverButton, bool isButtonDown) override
-    {
-        auto bounds = getLocalBounds().toFloat();
-        float cornerSize = std::min (bounds.getWidth(), bounds.getHeight()) * 0.5f;
-
-        juce::Colour baseCol = isDark
-            ? juce::Colour (0xffffffff).withAlpha (isButtonDown ? 0.12f : (isMouseOverButton ? 0.08f : 0.04f))
-            : juce::Colour (0xff000000).withAlpha (isButtonDown ? 0.09f : (isMouseOverButton ? 0.06f : 0.03f));
-        juce::Colour accent = juce::Colour (0xff00f0ff);
-        juce::Colour borderCol = isEngaged ? accent : (isDark ? juce::Colour (0xffffffff).withAlpha (0.1f) : juce::Colour (0xff000000).withAlpha (0.1f));
-
-        g.setColour (baseCol);
-        g.fillRoundedRectangle (bounds, cornerSize);
-        g.setColour (borderCol);
-        g.drawRoundedRectangle (bounds, cornerSize, isEngaged ? 1.4f : 0.75f);
-
-        auto textArea = bounds.removeFromTop (bounds.getHeight() * 0.46f);
-        g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
-        g.setColour (isEngaged ? accent : (isDark ? juce::Colour (0xff94a3b8) : juce::Colour (0xff64748b)));
-        g.drawText ("EQ", textArea, juce::Justification::centred, false);
-
-        // Mini on/off switch glyph
-        auto switchArea = bounds.reduced (bounds.getWidth() * 0.22f, 0.0f);
-        float trackH = juce::jmin (switchArea.getHeight(), 7.0f);
-        auto track = switchArea.withSizeKeepingCentre (switchArea.getWidth(), trackH);
-
-        g.setColour (isEngaged ? accent.withAlpha (0.5f) : (isDark ? juce::Colours::white.withAlpha (0.15f) : juce::Colours::black.withAlpha (0.15f)));
-        g.fillRoundedRectangle (track, trackH * 0.5f);
-
-        float knobD = trackH + 3.0f;
-        float knobX = isEngaged ? track.getRight() - knobD : track.getX();
-        g.setColour (isEngaged ? accent : (isDark ? juce::Colour (0xff94a3b8) : juce::Colour (0xff64748b)));
-        g.fillEllipse (knobX, track.getCentreY() - knobD * 0.5f, knobD, knobD);
-    }
-
-private:
-    bool isDark { true };
-    bool isEngaged { false };
-
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EqToggleButton)
-};
-
-//==============================================================================
 // BluPrint Pill LookAndFeel Design System
 //==============================================================================
 class BluPrintPillLookAndFeel : public juce::LookAndFeel_V4
@@ -404,46 +348,6 @@ private:
 };
 
 //==============================================================================
-// Dynamic EQ Control Panel - shown in a CallOutBox anchored to the header's
-// EQ toggle button. Draws the combined response curve + per-band gain
-// readouts, and hosts the per-band controls via APVTS attachments so host
-// automation/state-save works the same way it does for every other
-// parameter in this plugin.
-//==============================================================================
-class DynamicEqPanel  : public juce::Component,
-                         private juce::Timer
-{
-public:
-    explicit DynamicEqPanel (JustifiedLevelControlAudioProcessor& p);
-    ~DynamicEqPanel() override;
-
-    void paint (juce::Graphics& g) override;
-    void resized() override;
-
-private:
-    void timerCallback() override;
-
-    JustifiedLevelControlAudioProcessor& processor;
-
-    struct BandControls
-    {
-        juce::Slider freqSlider, gainSlider, qSlider, thresholdSlider, rangeSlider, attackSlider, releaseSlider;
-        juce::ToggleButton dynamicOnButton { "DYN" };
-        juce::ToggleButton enabledButton  { "ON" };
-
-        std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> freqAttach, gainAttach, qAttach, thresholdAttach, rangeAttach, attackAttach, releaseAttach;
-        std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> dynamicOnAttach, enabledAttach;
-    };
-
-    std::array<BandControls, JustifiedLevelControlAudioProcessor::numEqBands> bands;
-
-    juce::ToggleButton masterEnableSwitch { "DYNAMIC EQ ENGAGED" };
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> masterEnableAttach;
-
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DynamicEqPanel)
-};
-
-//==============================================================================
 // Main Plugin Editor (Justified Level Control Dashboard)
 //==============================================================================
 class JustifiedLevelControlAudioProcessorEditor  : public juce::AudioProcessorEditor,
@@ -488,8 +392,6 @@ private:
 
     // UI Scale Toggle (50% / 100%, single magnifying-glass icon button)
     ZoomToggleButton zoomButton;
-    EqToggleButton eqButton;
-    void showEqPanel();
 
     std::array<float, JustifiedLevelControlAudioProcessor::scopeSize> tempScopeData;
     std::array<float, JustifiedLevelControlAudioProcessor::scopeSize> tempRefData;

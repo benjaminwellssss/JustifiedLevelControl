@@ -69,60 +69,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout JustifiedLevelControlAudioPr
         true
     ));
 
-    //--- Dynamic EQ (default off - the plugin stays a pure monitor until engaged) ---
-    params.push_back (std::make_unique<juce::AudioParameterBool> (
-        ParamIDs::eqEnabled,
-        "Dynamic EQ Enabled",
-        false
-    ));
-
-    const float defaultBandFreqs[JustifiedLevelControlAudioProcessor::numEqBands] = { 120.0f, 800.0f, 3000.0f, 8000.0f };
-
-    for (int i = 0; i < JustifiedLevelControlAudioProcessor::numEqBands; ++i)
-    {
-        juce::String n = " " + juce::String (i + 1);
-
-        params.push_back (std::make_unique<juce::AudioParameterFloat> (
-            juce::ParameterID (ParamIDs::eqBand ("eqBandFreq", i), 1), "EQ Band" + n + " Frequency",
-            juce::NormalisableRange<float> (20.0f, 20000.0f, 1.0f, 0.3f), defaultBandFreqs[i],
-            juce::AudioParameterFloatAttributes().withLabel ("Hz")));
-
-        params.push_back (std::make_unique<juce::AudioParameterFloat> (
-            juce::ParameterID (ParamIDs::eqBand ("eqBandGain", i), 1), "EQ Band" + n + " Gain",
-            juce::NormalisableRange<float> (-18.0f, 18.0f, 0.1f), 0.0f,
-            juce::AudioParameterFloatAttributes().withLabel ("dB")));
-
-        params.push_back (std::make_unique<juce::AudioParameterFloat> (
-            juce::ParameterID (ParamIDs::eqBand ("eqBandQ", i), 1), "EQ Band" + n + " Q",
-            juce::NormalisableRange<float> (0.1f, 10.0f, 0.01f, 0.4f), 1.0f));
-
-        params.push_back (std::make_unique<juce::AudioParameterFloat> (
-            juce::ParameterID (ParamIDs::eqBand ("eqBandThreshold", i), 1), "EQ Band" + n + " Threshold",
-            juce::NormalisableRange<float> (-60.0f, 0.0f, 0.1f), -24.0f,
-            juce::AudioParameterFloatAttributes().withLabel ("dB")));
-
-        params.push_back (std::make_unique<juce::AudioParameterFloat> (
-            juce::ParameterID (ParamIDs::eqBand ("eqBandRange", i), 1), "EQ Band" + n + " Range",
-            juce::NormalisableRange<float> (-24.0f, 24.0f, 0.1f), -6.0f,
-            juce::AudioParameterFloatAttributes().withLabel ("dB")));
-
-        params.push_back (std::make_unique<juce::AudioParameterFloat> (
-            juce::ParameterID (ParamIDs::eqBand ("eqBandAttack", i), 1), "EQ Band" + n + " Attack",
-            juce::NormalisableRange<float> (1.0f, 200.0f, 0.1f, 0.5f), 10.0f,
-            juce::AudioParameterFloatAttributes().withLabel ("ms")));
-
-        params.push_back (std::make_unique<juce::AudioParameterFloat> (
-            juce::ParameterID (ParamIDs::eqBand ("eqBandRelease", i), 1), "EQ Band" + n + " Release",
-            juce::NormalisableRange<float> (20.0f, 1000.0f, 1.0f, 0.5f), 150.0f,
-            juce::AudioParameterFloatAttributes().withLabel ("ms")));
-
-        params.push_back (std::make_unique<juce::AudioParameterBool> (
-            juce::ParameterID (ParamIDs::eqBand ("eqBandDynamicOn", i), 1), "EQ Band" + n + " Dynamic On", true));
-
-        params.push_back (std::make_unique<juce::AudioParameterBool> (
-            juce::ParameterID (ParamIDs::eqBand ("eqBandEnabled", i), 1), "EQ Band" + n + " Enabled", true));
-    }
-
     return { params.begin(), params.end() };
 }
 
@@ -412,20 +358,6 @@ void JustifiedLevelControlAudioProcessor::prepareToPlay (double sampleRate, int 
     truePeakScratchBuffer.clear();
     currentTruePeakDb.store (-100.0f);
     highestTruePeakDb.store (-100.0f);
-
-    // Dynamic EQ
-    for (auto& b : eqBandState)
-    {
-        b.shapingFilterL.reset();
-        b.shapingFilterR.reset();
-        b.detectorFilterL.reset();
-        b.detectorFilterR.reset();
-        b.envelopeLinear = 0.0f;
-        b.currentDynamicGainDb = 0.0f;
-        b.samplesSinceCoeffUpdate = eqCoeffUpdateInterval; // force an immediate coefficient update on the first sample
-    }
-    for (auto& a : eqBandEffectiveGainDb) a.store (0.0f);
-    for (auto& a : eqBandDynamicGainDb) a.store (0.0f);
 }
 
 void JustifiedLevelControlAudioProcessor::releaseResources()
@@ -458,16 +390,6 @@ void JustifiedLevelControlAudioProcessor::processBlock (juce::AudioBuffer<float>
 
     if (numSamples == 0 || totalNumInputChannels == 0)
         return;
-
-    // Dynamic EQ (default off - when disabled the plugin stays a pure,
-    // transparent monitor and this buffer is never touched). When enabled,
-    // it actually shapes the signal, so everything below - meters included -
-    // reflects the post-EQ result, matching what leaves the plugin.
-    bool eqOn = false;
-    if (auto* p = apvts.getRawParameterValue (ParamIDs::eqEnabled.getParamID()))
-        eqOn = p->load() > 0.5f;
-    if (eqOn)
-        processDynamicEq (buffer);
 
     const float* leftChannelData  = buffer.getReadPointer (0);
     const float* rightChannelData = (totalNumInputChannels > 1) ? buffer.getReadPointer (1) : leftChannelData;
@@ -629,117 +551,6 @@ void JustifiedLevelControlAudioProcessor::processBlock (juce::AudioBuffer<float>
     float denom = std::sqrt (sumL2 * sumR2);
     float corr = (denom > 1e-6f) ? (sumDot / denom) : 1.0f;
     phaseCorrelation.store (juce::jlimit (-1.0f, 1.0f, corr), std::memory_order_relaxed);
-}
-
-//==============================================================================
-// Dynamic EQ: each band's shaping filter is a peak/bell IIR whose gain can be
-// modulated in real time by an internal-sidechain envelope follower reading
-// a dedicated bandpass "detector" filter tuned to the same freq/Q. Threshold
-// sets the level (of that detected band) above which the effect engages;
-// Range is the maximum gain change (a soft-knee curve approaches it smoothly
-// rather than a hard ratio, matching the simplified Threshold+Range model
-// used by other dynamic EQs). Shaping-filter coefficients are only
-// recomputed every eqCoeffUpdateInterval samples (control-rate) rather than
-// per-sample, since recomputing biquad coefficients involves trig/pow calls
-// that are unnecessary at audio rate for a smoothly-moving gain value.
-//==============================================================================
-void JustifiedLevelControlAudioProcessor::processDynamicEq (juce::AudioBuffer<float>& buffer)
-{
-    const int numSamples = buffer.getNumSamples();
-    const int numChannels = buffer.getNumChannels();
-    if (numSamples == 0 || numChannels == 0)
-        return;
-
-    float* left  = buffer.getWritePointer (0);
-    float* right = (numChannels > 1) ? buffer.getWritePointer (1) : left;
-
-    for (int b = 0; b < numEqBands; ++b)
-    {
-        auto& band = eqBandState[static_cast<size_t> (b)];
-
-        bool bandEnabled = false;
-        if (auto* p = apvts.getRawParameterValue (ParamIDs::eqBand ("eqBandEnabled", b)))
-            bandEnabled = p->load() > 0.5f;
-
-        if (!bandEnabled)
-        {
-            eqBandEffectiveGainDb[static_cast<size_t> (b)].store (0.0f, std::memory_order_relaxed);
-            eqBandDynamicGainDb[static_cast<size_t> (b)].store (0.0f, std::memory_order_relaxed);
-            continue;
-        }
-
-        float freq = apvts.getRawParameterValue (ParamIDs::eqBand ("eqBandFreq", b))->load();
-        float q = apvts.getRawParameterValue (ParamIDs::eqBand ("eqBandQ", b))->load();
-        float staticGainDb = apvts.getRawParameterValue (ParamIDs::eqBand ("eqBandGain", b))->load();
-        bool dynamicOn = apvts.getRawParameterValue (ParamIDs::eqBand ("eqBandDynamicOn", b))->load() > 0.5f;
-        float thresholdDb = apvts.getRawParameterValue (ParamIDs::eqBand ("eqBandThreshold", b))->load();
-        float rangeDb = apvts.getRawParameterValue (ParamIDs::eqBand ("eqBandRange", b))->load();
-        float attackMs = apvts.getRawParameterValue (ParamIDs::eqBand ("eqBandAttack", b))->load();
-        float releaseMs = apvts.getRawParameterValue (ParamIDs::eqBand ("eqBandRelease", b))->load();
-
-        freq = juce::jlimit (20.0f, 20000.0f, freq);
-        q = juce::jlimit (0.1f, 10.0f, q);
-
-        float sr = static_cast<float> (currentSampleRate > 0.0 ? currentSampleRate : 44100.0);
-        float attackCoeff  = std::exp (-1.0f / (sr * juce::jmax (0.001f, attackMs  / 1000.0f)));
-        float releaseCoeff = std::exp (-1.0f / (sr * juce::jmax (0.001f, releaseMs / 1000.0f)));
-
-        // Detector is a fixed bandpass at the same freq/Q - cheap to keep current every block.
-        auto detCoeffs = juce::dsp::IIR::Coefficients<float>::makeBandPass (currentSampleRate, freq, q);
-        *band.detectorFilterL.coefficients = *detCoeffs;
-        *band.detectorFilterR.coefficients = *detCoeffs;
-
-        for (int i = 0; i < numSamples; ++i)
-        {
-            float l = left[i];
-            float r = right[i];
-
-            if (dynamicOn)
-            {
-                float dl = band.detectorFilterL.processSample (l);
-                float dr = band.detectorFilterR.processSample (r);
-                float instantLevel = std::max (std::abs (dl), std::abs (dr));
-
-                float envCoeff = (instantLevel > band.envelopeLinear) ? attackCoeff : releaseCoeff;
-                band.envelopeLinear = envCoeff * band.envelopeLinear + (1.0f - envCoeff) * instantLevel;
-
-                float envelopeDb = (band.envelopeLinear <= 0.00001f) ? -100.0f : juce::Decibels::gainToDecibels (band.envelopeLinear, -100.0f);
-                float overshoot = envelopeDb - thresholdDb;
-
-                float targetDynamicGain = 0.0f;
-                if (overshoot > 0.0f)
-                {
-                    constexpr float kneeWidth = 6.0f;
-                    float shape = 1.0f - std::exp (-overshoot / kneeWidth);
-                    targetDynamicGain = rangeDb * shape;
-                }
-
-                float gainCoeff = (std::abs (targetDynamicGain) > std::abs (band.currentDynamicGainDb)) ? attackCoeff : releaseCoeff;
-                band.currentDynamicGainDb = gainCoeff * band.currentDynamicGainDb + (1.0f - gainCoeff) * targetDynamicGain;
-            }
-            else
-            {
-                band.currentDynamicGainDb = 0.0f;
-            }
-
-            if (band.samplesSinceCoeffUpdate >= eqCoeffUpdateInterval)
-            {
-                band.samplesSinceCoeffUpdate = 0;
-                float effectiveGainDb = staticGainDb + band.currentDynamicGainDb;
-                auto shapeCoeffs = juce::dsp::IIR::Coefficients<float>::makePeakFilter (
-                    currentSampleRate, freq, q, juce::Decibels::decibelsToGain (effectiveGainDb));
-                *band.shapingFilterL.coefficients = *shapeCoeffs;
-                *band.shapingFilterR.coefficients = *shapeCoeffs;
-
-                eqBandEffectiveGainDb[static_cast<size_t> (b)].store (effectiveGainDb, std::memory_order_relaxed);
-                eqBandDynamicGainDb[static_cast<size_t> (b)].store (band.currentDynamicGainDb, std::memory_order_relaxed);
-            }
-            band.samplesSinceCoeffUpdate++;
-
-            left[i]  = band.shapingFilterL.processSample (l);
-            right[i] = band.shapingFilterR.processSample (r);
-        }
-    }
 }
 
 //==============================================================================
