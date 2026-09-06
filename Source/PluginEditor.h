@@ -186,6 +186,7 @@ public:
     ~ReferenceBarComponent() override = default;
 
     void paint (juce::Graphics& g) override;
+    void paintOverChildren (juce::Graphics& g) override;
     void resized() override;
     void setDarkMode (bool dark) { isDark = dark; repaint(); }
 
@@ -197,9 +198,66 @@ private:
     juce::ToggleButton abToggleButton { "LIVE / REF A/B" };
 
     std::unique_ptr<juce::FileChooser> fileChooser;
+    juce::Rectangle<int> readoutArea;
     bool isDark { true };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ReferenceBarComponent)
+};
+
+//==============================================================================
+// Zoom Toggle Button - a single magnifying-glass icon replacing separate
+// 50%/100% text buttons. Toggle state true = currently zoomed out (50%),
+// so the glyph inside the lens shows the "+" you'd click to zoom back in.
+//==============================================================================
+class ZoomToggleButton : public juce::Button
+{
+public:
+    ZoomToggleButton() : juce::Button ("zoomToggle")
+    {
+        setClickingTogglesState (true);
+    }
+
+    void setDarkMode (bool dark) { isDark = dark; repaint(); }
+
+    void paintButton (juce::Graphics& g, bool isMouseOverButton, bool isButtonDown) override
+    {
+        auto bounds = getLocalBounds().toFloat();
+        float cornerSize = std::min (bounds.getWidth(), bounds.getHeight()) * 0.5f;
+
+        juce::Colour baseCol = isDark
+            ? juce::Colour (0xffffffff).withAlpha (isButtonDown ? 0.12f : (isMouseOverButton ? 0.08f : 0.04f))
+            : juce::Colour (0xff000000).withAlpha (isButtonDown ? 0.09f : (isMouseOverButton ? 0.06f : 0.03f));
+        juce::Colour borderCol = isDark ? juce::Colour (0xffffffff).withAlpha (0.1f) : juce::Colour (0xff000000).withAlpha (0.1f);
+        juce::Colour iconCol = isDark ? juce::Colour (0xff94a3b8) : juce::Colour (0xff475569);
+
+        g.setColour (baseCol);
+        g.fillRoundedRectangle (bounds, cornerSize);
+        g.setColour (borderCol);
+        g.drawRoundedRectangle (bounds, cornerSize, 0.75f);
+
+        auto iconBounds = bounds.reduced (bounds.getWidth() * 0.26f);
+        float lensD = iconBounds.getWidth() * 0.68f;
+        juce::Rectangle<float> lensRect (iconBounds.getX(), iconBounds.getY(), lensD, lensD);
+
+        g.setColour (iconCol);
+        g.drawEllipse (lensRect, 1.6f);
+
+        juce::Point<float> handleStart (lensRect.getRight() - lensD * 0.12f, lensRect.getBottom() - lensD * 0.12f);
+        juce::Point<float> handleEnd = handleStart.translated (lensD * 0.5f, lensD * 0.5f);
+        g.drawLine (juce::Line<float> (handleStart, handleEnd), 1.8f);
+
+        // +/- glyph inside the lens shows which way the next click zooms
+        float glyphHalf = lensD * 0.17f;
+        auto lensCentre = lensRect.getCentre();
+        g.drawLine (lensCentre.x - glyphHalf, lensCentre.y, lensCentre.x + glyphHalf, lensCentre.y, 1.4f);
+        if (getToggleState())
+            g.drawLine (lensCentre.x, lensCentre.y - glyphHalf, lensCentre.x, lensCentre.y + glyphHalf, 1.4f);
+    }
+
+private:
+    bool isDark { true };
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ZoomToggleButton)
 };
 
 //==============================================================================
@@ -327,9 +385,8 @@ private:
     juce::TextButton darkThemeButton { "DARK" };
     juce::TextButton lightThemeButton { "LIGHT" };
 
-    // UI Scale Buttons (50%, 100%)
-    juce::TextButton scale50Button { "50%" };
-    juce::TextButton scale100Button { "100%" };
+    // UI Scale Toggle (50% / 100%, single magnifying-glass icon button)
+    ZoomToggleButton zoomButton;
 
     std::array<float, JustifiedLevelControlAudioProcessor::scopeSize> tempScopeData;
     std::array<float, JustifiedLevelControlAudioProcessor::scopeSize> tempRefData;
@@ -339,6 +396,10 @@ private:
     int tempOscWritePos { 0 };
     
     std::unique_ptr<juce::Drawable> logoSVG;
+
+    // Logo intro animation (fade + slide-in on launch, logo artwork itself untouched)
+    static constexpr int logoAnimTotalFrames = 40;
+    int logoAnimFrame { 0 };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (JustifiedLevelControlAudioProcessorEditor)
 };

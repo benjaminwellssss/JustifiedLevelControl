@@ -1104,6 +1104,7 @@ ReferenceBarComponent::ReferenceBarComponent (JustifiedLevelControlAudioProcesso
                 float normVal = juce::jmap (static_cast<float> (i + 1), 1.0f, 4.0f, 0.0f, 1.0f);
                 param->setValueNotifyingHost (normVal);
             }
+            repaint();
         };
         addAndMakeVisible (slotButtons[i]);
     }
@@ -1127,6 +1128,7 @@ ReferenceBarComponent::ReferenceBarComponent (JustifiedLevelControlAudioProcesso
             if (result.exists())
             {
                 processor.loadReferenceFile (result, selectedSlot);
+                repaint();
             }
         });
     };
@@ -1148,6 +1150,54 @@ void ReferenceBarComponent::paint (juce::Graphics& g)
     g.fillRoundedRectangle (bounds, 12.0f);
     g.setColour (isDark ? juce::Colour (0xffffffff).withAlpha (0.15f) : juce::Colour (0xff000000).withAlpha (0.15f));
     g.drawRoundedRectangle (bounds, 12.0f, 0.75f);
+
+    // Selected-slot readout - fills what was previously dead space on the right
+    // of the bar with the info those controls imply but never showed.
+    if (readoutArea.isEmpty())
+        return;
+
+    int selectedSlot = 0;
+    for (int i = 0; i < 4; ++i)
+        if (slotButtons[i].getToggleState())
+            selectedSlot = i;
+
+    g.setColour (isDark ? juce::Colours::white.withAlpha (0.10f) : juce::Colours::black.withAlpha (0.10f));
+    g.drawVerticalLine (readoutArea.getX() - 10, static_cast<float> (getHeight()) * 0.18f, static_cast<float> (getHeight()) * 0.82f);
+
+    auto metrics = processor.getRefMetrics (selectedSlot);
+    auto area = readoutArea.reduced (2, 4);
+
+    if (metrics.loaded)
+    {
+        auto nameArea = area.removeFromTop (area.getHeight() / 2);
+        g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+        g.setColour (isDark ? juce::Colours::white : juce::Colour (0xff0f172a));
+        g.drawText ("REF " + juce::String (selectedSlot + 1) + ":  " + metrics.fileName, nameArea, juce::Justification::centredLeft, true);
+
+        juce::String statsStr = juce::String (metrics.integratedLufs, 1) + " LUFS   ·   TP " + juce::String (metrics.truePeakDb, 1) + " dB";
+        g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
+        g.setColour (juce::Colour (0xfff97316)); // BluPrint Copper Orange - matches the reference curve elsewhere
+        g.drawText (statsStr, area, juce::Justification::centredLeft, true);
+    }
+    else
+    {
+        g.setFont (juce::FontOptions (12.5f, juce::Font::bold));
+        g.setColour (isDark ? juce::Colour (0xff64748b) : juce::Colour (0xff475569));
+        g.drawText ("SLOT " + juce::String (selectedSlot + 1) + " EMPTY — LOAD A REFERENCE TRACK", readoutArea, juce::Justification::centredLeft, true);
+    }
+}
+
+void ReferenceBarComponent::paintOverChildren (juce::Graphics& g)
+{
+    // Small loaded/empty dot on each slot button (copper = loaded, dim = empty)
+    for (int i = 0; i < 4; ++i)
+    {
+        auto b = slotButtons[i].getBounds();
+        bool loaded = processor.hasReference (i);
+        g.setColour (loaded ? juce::Colour (0xfff97316) : (isDark ? juce::Colour (0xff334155) : juce::Colour (0xffcbd5e1)));
+        float d = 5.0f;
+        g.fillEllipse (static_cast<float> (b.getRight()) - d - 1.0f, static_cast<float> (b.getBottom()) - d - 1.0f, d, d);
+    }
 }
 
 void ReferenceBarComponent::resized()
@@ -1165,6 +1215,9 @@ void ReferenceBarComponent::resized()
 
     bounds.removeFromLeft (20);
     abToggleButton.setBounds (bounds.removeFromLeft (130).reduced (2, 2));
+
+    bounds.removeFromLeft (18);
+    readoutArea = bounds.reduced (0, 2);
 }
 
 //==============================================================================
@@ -1276,23 +1329,16 @@ JustifiedLevelControlAudioProcessorEditor::JustifiedLevelControlAudioProcessorEd
 
     // Dark & Light Mode Theme Switcher Buttons (Removed as per request)
 
-    // UI Scale Factor Buttons (50%, 100%)
-    auto setUiScale = [this] (float scale) {
+    // UI Scale Toggle (50% / 100%, single magnifying-glass icon button)
+    zoomButton.setToggleState (false, juce::dontSendNotification); // false = currently at 100%
+    zoomButton.setTooltip ("Toggle window size between 100% and 50%");
+    zoomButton.onClick = [this]() {
         int baseW = 1200;
         int baseH = 820;
+        float scale = zoomButton.getToggleState() ? 0.5f : 1.0f;
         setSize (juce::roundToInt (baseW * scale), juce::roundToInt (baseH * scale));
     };
-
-    scale50Button.setClickingTogglesState (true);
-    scale50Button.setRadioGroupId (202);
-    scale50Button.onClick = [setUiScale]() { setUiScale (0.5f); };
-    addAndMakeVisible (scale50Button);
-
-    scale100Button.setClickingTogglesState (true);
-    scale100Button.setRadioGroupId (202);
-    scale100Button.setToggleState (true, juce::dontSendNotification);
-    scale100Button.onClick = [setUiScale]() { setUiScale (1.0f); };
-    addAndMakeVisible (scale100Button);
+    addAndMakeVisible (zoomButton);
 
     setSize (1200, 820);
     setResizable (true, true);
@@ -1318,12 +1364,20 @@ void JustifiedLevelControlAudioProcessorEditor::updateTheme (bool dark)
     lufsMeterView.setDarkMode (dark);
     goalLineView.setDarkMode (dark);
     refBarView.setDarkMode (dark);
+    zoomButton.setDarkMode (dark);
 
     repaint();
 }
 
 void JustifiedLevelControlAudioProcessorEditor::timerCallback()
 {
+    // Logo intro animation (fade + slide-in on launch only)
+    if (logoAnimFrame < logoAnimTotalFrames)
+    {
+        logoAnimFrame++;
+        repaint (getLocalBounds().removeFromTop (58));
+    }
+
     // Update Spectrum Engine
     audioProcessor.getScopeData (tempScopeData.data(), tempScopeData.size());
     audioProcessor.getRefScopeData (tempRefData.data(), tempRefData.size());
@@ -1421,16 +1475,28 @@ void JustifiedLevelControlAudioProcessorEditor::paint (juce::Graphics& g)
         // SVG dimensions are roughly 171 x 22 based on viewBox
         float svgW = 171.3f;
         float svgH = 22.7f;
-        
+
         // Scale to fit nicely in the 48px high header
         float scale = 30.0f / svgH;
         float drawW = svgW * scale;
         float drawH = 30.0f;
-        
+
         float drawX = static_cast<float> (headerArea.getX() + 14);
-        float drawY = static_cast<float> (headerArea.getY()) + (static_cast<float> (headerArea.getHeight()) - drawH) * 0.5f;
-        
-        logoSVG->drawWithin (g, juce::Rectangle<float> (drawX, drawY, drawW, drawH), juce::RectanglePlacement::xLeft | juce::RectanglePlacement::yMid, 1.0f);
+        float targetY = static_cast<float> (headerArea.getY()) + (static_cast<float> (headerArea.getHeight()) - drawH) * 0.5f;
+
+        // Intro animation: fade + slight scale/slide-in on launch. The logo
+        // artwork itself is untouched - only its opacity/position animate.
+        float t = juce::jlimit (0.0f, 1.0f, static_cast<float> (logoAnimFrame) / static_cast<float> (logoAnimTotalFrames));
+        float eased = 1.0f - std::pow (1.0f - t, 3.0f); // ease-out cubic
+
+        float drawY = targetY + (1.0f - eased) * 6.0f;
+        float animScale = 0.94f + eased * 0.06f;
+        float scaledW = drawW * animScale;
+        float scaledH = drawH * animScale;
+        float scaledX = drawX - (scaledW - drawW) * 0.5f;
+        float scaledY = drawY - (scaledH - drawH) * 0.5f;
+
+        logoSVG->drawWithin (g, juce::Rectangle<float> (scaledX, scaledY, scaledW, scaledH), juce::RectanglePlacement::xLeft | juce::RectanglePlacement::yMid, eased);
     }
 
     // Subtle copyright watermark & Version Number on bottom right
@@ -1451,11 +1517,9 @@ void JustifiedLevelControlAudioProcessorEditor::resized()
 
     auto headerArea = bounds.removeFromTop (48);
 
-    auto topRightControls = headerArea.removeFromRight (100).reduced (0, 8);
+    auto topRightControls = headerArea.removeFromRight (46).reduced (0, 8);
 
-    scale100Button.setBounds (topRightControls.removeFromRight (42));
-    topRightControls.removeFromRight (4);
-    scale50Button.setBounds (topRightControls.removeFromRight (38));
+    zoomButton.setBounds (topRightControls.removeFromRight (32));
 
     topRightControls.removeFromRight (14);
 
