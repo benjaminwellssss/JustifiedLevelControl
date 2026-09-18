@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(JustifiedLevelControl VERSION 1.0.0 LANGUAGES C CXX)
+project(JustifiedLevelControl VERSION 1.0.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -31,7 +31,7 @@ juce_add_plugin(JustifiedLevelControl
     PLUGIN_CODE Jlc1
     FORMATS VST3 AU Standalone
     PRODUCT_NAME "Justified Level Control"
-    VERSION "1.0.0"
+    VERSION "1.0.1"
 )
 
 # Add Binary Resources
