@@ -3,6 +3,285 @@
 #include "BinaryData.h"
 
 //==============================================================================
+// Neu design system implementation
+//==============================================================================
+namespace Neu
+{
+namespace
+{
+    struct FontSet
+    {
+        juce::String sansName, monoName;
+        juce::String sansRegular, sansBold, sansBlack, monoRegular, monoBold;
+
+        FontSet()
+        {
+            auto all = juce::Font::findAllTypefaceNames();
+
+            auto pickName = [&all] (std::initializer_list<const char*> candidates, const juce::String& fallback)
+            {
+                for (auto* name : candidates)
+                    if (all.contains (name))
+                        return juce::String (name);
+                return fallback;
+            };
+
+            // Spec order first (Windows), then the closest heavy sans / mono on macOS.
+            sansName = pickName ({ "Segoe UI Variable Display", "Segoe UI", "Roboto", "Avenir Next", "Helvetica Neue" },
+                                 juce::Font::getDefaultSansSerifFontName());
+            monoName = pickName ({ "Cascadia Code", "Consolas", "SF Mono", "Menlo" },
+                                 juce::Font::getDefaultMonospacedFontName());
+
+            auto pickStyle = [] (const juce::String& family, std::initializer_list<const char*> candidates)
+            {
+                auto styles = juce::Font::findAllTypefaceStyles (family);
+                for (auto* style : candidates)
+                    if (styles.contains (style))
+                        return juce::String (style);
+                return juce::String();
+            };
+
+            sansBlack   = pickStyle (sansName, { "Black", "Heavy", "ExtraBold", "Extra Bold", "Bold" });
+            sansBold    = pickStyle (sansName, { "Bold", "Demi Bold", "SemiBold", "Semibold" });
+            sansRegular = pickStyle (sansName, { "Regular", "Medium", "Roman" });
+            monoBold    = pickStyle (monoName, { "Bold", "SemiBold", "Semibold" });
+            monoRegular = pickStyle (monoName, { "Regular", "Book", "Roman" });
+        }
+    };
+
+    const FontSet& fonts()
+    {
+        static FontSet set;
+        return set;
+    }
+
+    juce::Font makeFont (const juce::String& family, const juce::String& style, float height, bool boldFallback)
+    {
+        juce::Font f = style.isNotEmpty() ? juce::Font (juce::FontOptions (family, style, height))
+                                          : juce::Font (juce::FontOptions (family, height, boldFallback ? juce::Font::bold : juce::Font::plain));
+        return f;
+    }
+
+    struct ShadowSpec
+    {
+        juce::Point<int> darkOffset;  int darkRadius;
+        juce::Point<int> lightOffset; int lightRadius;
+        bool floating;
+    };
+
+    // Box-blur radii are roughly 3/4 of the CSS blur values in the spec.
+    ShadowSpec specFor (Depth depth)
+    {
+        switch (depth)
+        {
+            case Depth::small:    return { { 3, 3 }, 5,  { -3, -3 }, 5, false };
+            case Depth::floating: return { { 6, 6 }, 10, { -5, -5 }, 9, true };
+            case Depth::raised:
+            default:              return { { 6, 6 }, 10, { -5, -5 }, 9, false };
+        }
+    }
+
+    float scaleOf (juce::Graphics& g)
+    {
+        return juce::jmax (1.0f, g.getInternalContext().getPhysicalPixelScaleFactor());
+    }
+
+    // Looks up (or renders) a cached shadow image. Images are rendered at the
+    // physical pixel scale so they stay crisp on Retina screens.
+    template <typename Renderer>
+    void drawCached (juce::Graphics& g, const juce::String& key, juce::Rectangle<float> logicalArea, Renderer&& render)
+    {
+        juce::SharedResourcePointer<ShadowCache> cache;
+        auto scale = scaleOf (g);
+        auto fullKey = key + "@" + juce::String (juce::roundToInt (scale * 100.0f));
+
+        auto& images = cache->images;
+        auto it = images.find (fullKey);
+
+        if (it == images.end())
+        {
+            if (images.size() > 160)
+                images.clear(); // resizing churns sizes; keep memory bounded
+
+            int w = juce::jmax (1, juce::roundToInt (std::ceil (logicalArea.getWidth()  * scale)));
+            int h = juce::jmax (1, juce::roundToInt (std::ceil (logicalArea.getHeight() * scale)));
+            juce::Image image (juce::Image::ARGB, w, h, true);
+            {
+                juce::Graphics ig (image);
+                ig.addTransform (juce::AffineTransform::scale (scale));
+                render (ig);
+            }
+            it = images.emplace (fullKey, image).first;
+        }
+
+        g.drawImageTransformed (it->second,
+                                juce::AffineTransform::scale (1.0f / scale)
+                                    .translated (logicalArea.getX(), logicalArea.getY()));
+    }
+
+    juce::String sizeKey (juce::Rectangle<float> r, float radius)
+    {
+        return juce::String (juce::roundToInt (r.getWidth() * 2.0f)) + "x"
+             + juce::String (juce::roundToInt (r.getHeight() * 2.0f)) + "r"
+             + juce::String (juce::roundToInt (radius * 2.0f));
+    }
+}
+
+juce::Font sans (float height, Weight weight, float tracking)
+{
+    auto& f = fonts();
+    const auto& style = weight == Weight::black ? f.sansBlack
+                      : weight == Weight::bold  ? f.sansBold
+                                                : f.sansRegular;
+    auto font = makeFont (f.sansName, style, height, weight != Weight::regular);
+    return tracking != 0.0f ? font.withExtraKerningFactor (tracking) : font;
+}
+
+juce::Font mono (float height, bool bold, float tracking)
+{
+    auto& f = fonts();
+    auto font = makeFont (f.monoName, bold ? f.monoBold : f.monoRegular, height, bold);
+    return tracking != 0.0f ? font.withExtraKerningFactor (tracking) : font;
+}
+
+void raised (juce::Graphics& g, juce::Rectangle<float> body, float radius, Depth depth, juce::Colour fill)
+{
+    auto spec = specFor (depth);
+    int pad = spec.darkRadius + std::abs (spec.darkOffset.x) + 3;
+    if (spec.floating)
+        pad = juce::jmax (pad, 46);
+
+    auto padF = static_cast<float> (pad);
+    auto area = body.expanded (padF);
+    auto key = "R" + juce::String (static_cast<int> (depth)) + sizeKey (body, radius);
+
+    drawCached (g, key, area, [&] (juce::Graphics& ig)
+    {
+        juce::Path shape;
+        shape.addRoundedRectangle (padF, padF, body.getWidth(), body.getHeight(), radius);
+
+        if (spec.floating)
+            juce::DropShadow (juce::Colours::black.withAlpha (0.6f), 30, { 0, 18 }).drawForPath (ig, shape);
+
+        juce::DropShadow (Colours::highlight, spec.lightRadius, spec.lightOffset).drawForPath (ig, shape);
+        juce::DropShadow (Colours::shadow, spec.darkRadius, spec.darkOffset).drawForPath (ig, shape);
+    });
+
+    g.setColour (fill);
+    g.fillRoundedRectangle (body, radius);
+}
+
+void inset (juce::Graphics& g, juce::Rectangle<float> body, float radius, juce::Colour fill)
+{
+    g.setColour (fill);
+    g.fillRoundedRectangle (body, radius);
+
+    auto key = "I" + sizeKey (body, radius);
+
+    drawCached (g, key, body, [&] (juce::Graphics& ig)
+    {
+        juce::Path shape;
+        shape.addRoundedRectangle (0.0f, 0.0f, body.getWidth(), body.getHeight(), radius);
+        ig.reduceClipRegion (shape);
+
+        // A frame around the shape: its shadow falls inward across the edge.
+        juce::Path frame;
+        frame.addRectangle (-40.0f, -40.0f, body.getWidth() + 80.0f, body.getHeight() + 80.0f);
+        frame.addRoundedRectangle (0.0f, 0.0f, body.getWidth(), body.getHeight(), radius);
+        frame.setUsingNonZeroWinding (false);
+
+        juce::DropShadow (Colours::shadow, 5, { 3, 3 }).drawForPath (ig, frame);
+        juce::DropShadow (Colours::highlight, 5, { -3, -3 }).drawForPath (ig, frame);
+    });
+}
+
+void glow (juce::Graphics& g, const juce::Path& shape, juce::Colour colour, int radius)
+{
+    juce::DropShadow (colour, radius, {}).drawForPath (g, shape);
+}
+
+int sectionHeading (juce::Graphics& g, const juce::String& text, juce::Rectangle<int> area)
+{
+    auto font = sans (15.0f, Weight::black, 0.08f);
+    auto barH = 13.0f;
+    auto bar = juce::Rectangle<float> (static_cast<float> (area.getX()),
+                                       static_cast<float> (area.getCentreY()) - barH * 0.5f, 4.0f, barH);
+    g.setColour (Colours::accent);
+    g.fillRoundedRectangle (bar, 1.5f);
+
+    g.setFont (font);
+    g.setColour (Colours::text);
+    auto textX = area.getX() + 11;
+    auto upper = text.toUpperCase();
+    g.drawText (upper, textX, area.getY(), area.getWidth() - 11, area.getHeight(), juce::Justification::centredLeft, false);
+
+    return 11 + juce::roundToInt (font.getStringWidthFloat (upper));
+}
+
+void caption (juce::Graphics& g, const juce::String& text, juce::Rectangle<int> area,
+              juce::Colour colour, juce::Justification just)
+{
+    g.setFont (sans (11.5f, Weight::black, 0.14f));
+    g.setColour (colour);
+    g.drawText (text.toUpperCase(), area, just, false);
+}
+
+void setStyle (juce::Button& b, const juce::String& style)
+{
+    b.getProperties().set ("neuStyle", style);
+}
+} // namespace Neu
+
+namespace
+{
+    juce::String formatDb (float db, int decimals = 1)
+    {
+        return db <= -99.0f ? juce::String ("-INF") : juce::String (db, decimals);
+    }
+
+    // Floating info badge used by the hover inspectors.
+    void drawInspectorBadge (juce::Graphics& g, const juce::String& text, juce::Point<int> anchor, juce::Rectangle<int> limits)
+    {
+        auto font = Neu::mono (13.0f, true);
+        int w = juce::roundToInt (font.getStringWidthFloat (text)) + 22;
+        w = (w + 7) / 8 * 8; // quantise so the shadow cache stays small
+        int h = 24;
+        int x = juce::jlimit (limits.getX() + 4, limits.getRight() - w - 4, anchor.x + 14);
+        int y = juce::jlimit (limits.getY() + 4, limits.getBottom() - h - 4, anchor.y - 30);
+
+        auto body = juce::Rectangle<int> (x, y, w, h).toFloat();
+        Neu::raised (g, body, 9.0f, Neu::Depth::small, Neu::Colours::highlight);
+
+        g.setFont (font);
+        g.setColour (Neu::Colours::accent);
+        g.drawText (text, body, juce::Justification::centred, false);
+    }
+
+    void drawCrosshair (juce::Graphics& g, juce::Point<float> node, juce::Rectangle<float> area)
+    {
+        juce::Path ch;
+        ch.startNewSubPath (node.x, area.getY());
+        ch.lineTo (node.x, area.getBottom());
+        ch.startNewSubPath (area.getX(), node.y);
+        ch.lineTo (area.getRight(), node.y);
+
+        juce::PathStrokeType stroke (1.0f);
+        float dash[] = { 3.0f, 4.0f };
+        stroke.createDashedStroke (ch, ch, dash, 2);
+        g.setColour (Neu::Colours::accentDim.withAlpha (0.8f));
+        g.strokePath (ch, stroke);
+
+        juce::Path dot;
+        dot.addEllipse (node.x - 4.0f, node.y - 4.0f, 8.0f, 8.0f);
+        Neu::glow (g, dot, Neu::Colours::accentGlow, 6);
+        g.setColour (Neu::Colours::accent);
+        g.fillPath (dot);
+        g.setColour (Neu::Colours::onAccent);
+        g.fillEllipse (node.x - 1.5f, node.y - 1.5f, 3.0f, 3.0f);
+    }
+}
+
+//==============================================================================
 // GoalLineComponent Implementation
 //==============================================================================
 GoalLineComponent::GoalLineComponent (JustifiedLevelControlAudioProcessor& p)
@@ -13,16 +292,13 @@ GoalLineComponent::GoalLineComponent (JustifiedLevelControlAudioProcessor& p)
 
 void GoalLineComponent::setBoundsAndRange (juce::Rectangle<int> bounds, float minDb, float maxDb)
 {
-    activeArea = bounds;
     minDbLevel = minDb;
     maxDbLevel = maxDb;
 
     if (auto* param = processor.apvts.getRawParameterValue (ParamIDs::goalLevel.getParamID()))
-    {
         currentGoalDb = param->load();
-    }
-    
-    setBounds (activeArea);
+
+    setBounds (bounds);
 }
 
 int GoalLineComponent::getYFromTarget (float targetDb) const
@@ -38,10 +314,7 @@ void GoalLineComponent::updateTargetFromY (int yPos)
     currentGoalDb = juce::roundToInt (currentGoalDb * 10.0f) / 10.0f;
 
     if (auto* param = processor.apvts.getParameter (ParamIDs::goalLevel.getParamID()))
-    {
-        float normParam = juce::jmap (currentGoalDb, minDbLevel, maxDbLevel, 0.0f, 1.0f);
-        param->setValueNotifyingHost (normParam);
-    }
+        param->setValueNotifyingHost (param->convertTo0to1 (currentGoalDb));
 
     repaint();
 }
@@ -55,9 +328,7 @@ void GoalLineComponent::mouseDown (const juce::MouseEvent& event)
 void GoalLineComponent::mouseDrag (const juce::MouseEvent& event)
 {
     if (isDragging)
-    {
         updateTargetFromY (event.y);
-    }
 }
 
 void GoalLineComponent::mouseEnter (const juce::MouseEvent& event)
@@ -77,49 +348,78 @@ void GoalLineComponent::mouseExit (const juce::MouseEvent& event)
 
 void GoalLineComponent::paint (juce::Graphics& g)
 {
-    int y = getYFromTarget (currentGoalDb);
+    auto y = static_cast<float> (getYFromTarget (currentGoalDb));
+    bool active = isHovered || isDragging;
 
-    juce::Colour cyanColour = isDark ? juce::Colour (0xff00f0ff) : juce::Colour (0xff0284c7);
-    juce::Colour redColour  = juce::Colour (0xffff2255);
+    juce::Colour lineColour = isExceeded ? Neu::Colours::danger
+                            : (active ? Neu::Colours::accent : Neu::Colours::text);
 
-    juce::Colour baseColour = isExceeded ? redColour : cyanColour;
-    juce::Colour activeColour = (isHovered || isDragging) ? juce::Colours::white : baseColour;
-
-    g.setColour (activeColour.withAlpha (0.95f));
     juce::Path linePath;
-    linePath.startNewSubPath (0.0f, static_cast<float> (y));
-    linePath.lineTo (static_cast<float> (getWidth() - 110), static_cast<float> (y));
-    
-    juce::PathStrokeType stroke (isHovered ? 2.5f : (isExceeded ? 2.2f : 1.5f));
-    float dashPattern[] = { 6.0f, 4.0f };
-    stroke.createDashedStroke (linePath, linePath, dashPattern, 2);
-    g.strokePath (linePath, stroke);
+    linePath.startNewSubPath (0.0f, y);
+    linePath.lineTo (static_cast<float> (getWidth()) - 48.0f, y);
 
-    juce::String labelText = (isExceeded ? "OVER TARGET: " : "TARGET: ") + juce::String (currentGoalDb, 1) + " LUFS";
-    juce::Font badgeFont (juce::FontOptions (14.0f, juce::Font::bold));
-    g.setFont (badgeFont);
+    juce::PathStrokeType stroke (active ? 2.2f : 1.6f);
+    float dashPattern[] = { 7.0f, 5.0f };
+    juce::Path dashed;
+    stroke.createDashedStroke (dashed, linePath, dashPattern, 2);
 
-    int textWidth = badgeFont.getStringWidth (labelText) + 16;
-    int badgeX = getWidth() - 210;
-    int badgeY = juce::jlimit (2, getHeight() - 22, y - 10);
+    if (active || isExceeded)
+        Neu::glow (g, dashed, (isExceeded ? Neu::Colours::danger : Neu::Colours::accent).withAlpha (0.35f), 5);
 
-    g.setColour (isExceeded ? juce::Colour (0xff330011).withAlpha(0.85f) : (isDark ? juce::Colour (0xff0a111c).withAlpha(0.85f) : juce::Colour (0xfff8fafc).withAlpha(0.9f)));
-    g.fillRoundedRectangle (static_cast<float> (badgeX), static_cast<float> (badgeY), static_cast<float> (textWidth), 20.0f, 4.0f);
-    
-    g.setColour (activeColour);
-    g.drawRoundedRectangle (static_cast<float> (badgeX), static_cast<float> (badgeY), static_cast<float> (textWidth), 20.0f, 4.0f, 1.2f);
-    g.drawText (labelText, badgeX, badgeY, textWidth, 20, juce::Justification::centred, false);
+    g.setColour (lineColour.withAlpha (active ? 1.0f : 0.85f));
+    g.fillPath (dashed);
+
+    // Badge: raised pill sitting on the line, value in mono
+    juce::String caption = isExceeded ? "OVER TARGET" : "TARGET";
+    juce::String value = juce::String (currentGoalDb, 1) + " LUFS";
+
+    auto capFont = Neu::sans (11.5f, Neu::Weight::black, 0.14f);
+    auto valFont = Neu::mono (13.5f, true);
+    int capW = juce::roundToInt (capFont.getStringWidthFloat (caption));
+    int valW = juce::roundToInt (valFont.getStringWidthFloat (value));
+    int badgeW = (capW + valW + 34 + 7) / 8 * 8;
+    int badgeH = 24;
+    int badgeX = getWidth() - badgeW - 56;
+    int badgeY = juce::jlimit (4, getHeight() - badgeH - 4, juce::roundToInt (y) - badgeH / 2);
+
+    auto badge = juce::Rectangle<int> (badgeX, badgeY, badgeW, badgeH).toFloat();
+    Neu::raised (g, badge, static_cast<float> (badgeH) * 0.5f, Neu::Depth::small, Neu::Colours::highlight);
+
+    auto inner = badge.reduced (12.0f, 0.0f).toNearestInt();
+    g.setFont (capFont);
+    g.setColour (isExceeded ? Neu::Colours::danger : Neu::Colours::muted);
+    g.drawText (caption, inner.removeFromLeft (capW + 2), juce::Justification::centredLeft, false);
+
+    g.setFont (valFont);
+    g.setColour (isExceeded ? Neu::Colours::danger : Neu::Colours::accent);
+    g.drawText (value, inner, juce::Justification::centredRight, false);
 }
 
 //==============================================================================
 // SpectrumAnalyzerComponent Implementation
 //==============================================================================
+namespace
+{
+    constexpr float specMinDb = -80.0f;
+    constexpr float specMaxDb = 20.0f;
+}
+
 SpectrumAnalyzerComponent::SpectrumAnalyzerComponent (JustifiedLevelControlAudioProcessor& p)
     : processor (p)
 {
     scopeData.fill (0.0f);
     refScopeData.fill (0.0f);
     peakScopeData.fill (0.0f);
+}
+
+void SpectrumAnalyzerComponent::resized()
+{
+    auto content = getLocalBounds().reduced (16);
+    headingArea = content.removeFromTop (22);
+    content.removeFromTop (10);
+    freqLabelArea = content.removeFromBottom (18);
+    content.removeFromBottom (4);
+    plotArea = content;
 }
 
 void SpectrumAnalyzerComponent::updateSpectrumData (const float* newScopeData, const float* refData, size_t size)
@@ -129,14 +429,10 @@ void SpectrumAnalyzerComponent::updateSpectrumData (const float* newScopeData, c
     {
         scopeData[i] = newScopeData[i];
         if (newScopeData[i] > peakScopeData[i])
-        {
             peakScopeData[i] = newScopeData[i];
-        }
         else
-        {
             // Smooth 5-Second Peak Shadow Decay (60Hz * 5s = 300 frames)
             peakScopeData[i] = std::max (0.0f, peakScopeData[i] * 0.993f - 0.0008f);
-        }
     }
     if (refData != nullptr)
         std::copy_n (refData, count, refScopeData.begin());
@@ -146,7 +442,7 @@ void SpectrumAnalyzerComponent::updateSpectrumData (const float* newScopeData, c
 void SpectrumAnalyzerComponent::mouseMove (const juce::MouseEvent& event)
 {
     mousePos = event.getPosition();
-    mouseInside = true;
+    mouseInside = plotArea.contains (mousePos);
     repaint();
 }
 
@@ -160,7 +456,7 @@ void SpectrumAnalyzerComponent::mouseExit (const juce::MouseEvent& event)
 juce::String SpectrumAnalyzerComponent::getNoteNameForFrequency (float freqHz) const
 {
     if (freqHz <= 0.0f) return {};
-    
+
     double midiNoteDouble = 69.0 + 12.0 * (std::log (freqHz / 440.0) / std::log (2.0));
     int midiNote = juce::roundToInt (midiNoteDouble);
 
@@ -182,83 +478,73 @@ void SpectrumAnalyzerComponent::setBandPeaks (const std::array<float, 5>& bandPe
     {
         currentBandPeaks[i] = bandPeaks[i];
         if (currentBandPeaks[i] > goalDbThreshold)
-        {
             bandPeakRedTimestampsMs[i] = now;
-        }
     }
     repaint();
 }
 
 void SpectrumAnalyzerComponent::paint (juce::Graphics& g)
 {
-    auto bounds = getLocalBounds().toFloat();
+    using namespace Neu;
 
-    // Liquid Glass Panel Background
-    g.setColour (isDark ? juce::Colour (0xffffffff).withAlpha (0.04f) : juce::Colour (0xff000000).withAlpha (0.03f));
-    g.fillRoundedRectangle (bounds, 12.0f);
-    g.setColour (isDark ? juce::Colour (0xffffffff).withAlpha (0.15f) : juce::Colour (0xff000000).withAlpha (0.15f));
-    g.drawRoundedRectangle (bounds, 12.0f, 0.75f);
-    
-    // Card Header Title (Bottom Left)
-    g.setFont (juce::FontOptions (15.5f, juce::Font::bold));
-    g.setColour (juce::Colour (0xff94a3b8));
-    g.drawText ("SPECTRUM ANALYZER", 12, static_cast<int>(bounds.getHeight()) - 26, 200, 20, juce::Justification::left, false);
+    // Heading + legend
+    sectionHeading (g, "Spectrum Analyzer", headingArea);
+    {
+        auto legend = headingArea;
+        struct Item { const char* name; juce::Colour colour; };
+        const Item items[] = { { "REF", Colours::amber }, { "PEAK", Colours::accentDim }, { "LIVE", Colours::accent } };
+        g.setFont (mono (12.0f, true));
+        for (auto& item : items)
+        {
+            int textW = juce::roundToInt (g.getCurrentFont().getStringWidthFloat (item.name));
+            auto slot = legend.removeFromRight (textW + 18);
+            auto dot = juce::Rectangle<float> (static_cast<float> (slot.getX()), static_cast<float> (slot.getCentreY()) - 3.5f, 7.0f, 7.0f);
+            g.setColour (item.colour);
+            g.fillEllipse (dot);
+            g.setColour (Colours::muted);
+            g.drawText (item.name, slot.withTrimmedLeft (12), juce::Justification::centredLeft, false);
+            legend.removeFromRight (14);
+        }
+    }
+
+    auto plot = plotArea.toFloat();
+    inset (g, plot, 12.0f, Colours::well);
 
     const float minLog = std::log10 (20.0f);
     const float maxLog = std::log10 (20000.0f);
+    auto xForFreq = [&] (float f) { return plot.getX() + (std::log10 (f) - minLog) / (maxLog - minLog) * plot.getWidth(); };
+    auto yForLevel = [&] (float level) { return plot.getY() + (1.0f - level) * plot.getHeight(); };
+    auto yForDb = [&] (float db) { return juce::jmap (db, specMinDb, specMaxDb, plot.getBottom(), plot.getY()); };
 
-    // Muted Vertical Grid Lines (Frequency) & Silver Frequency Numbers Along Bottom
+    // Frequency labels sit under the well
     const float freqGrid[] = { 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000 };
+    g.setFont (mono (12.0f));
     for (float f : freqGrid)
     {
-        float normX = (std::log10 (f) - minLog) / (maxLog - minLog);
-        float x = normX * bounds.getWidth();
-        
-        g.setColour (isDark ? juce::Colours::white.withAlpha(0.08f) : juce::Colours::black.withAlpha(0.08f));
-        g.drawVerticalLine (juce::roundToInt (x), 0.0f, bounds.getHeight());
-
+        float x = xForFreq (f);
         juce::String text = (f >= 1000.0f) ? juce::String (f / 1000.0f, 0) + "k" : juce::String (static_cast<int> (f));
-        g.setFont (juce::FontOptions (13.5f, juce::Font::bold));
-        g.setColour (juce::Colour (0xff94a3b8));
-        g.drawText (text, static_cast<int> (x) - 15, static_cast<int> (bounds.getHeight()) - 18, 30, 14, juce::Justification::centred, false);
+        auto just = f <= 20.0f ? juce::Justification::centredLeft
+                  : (f >= 20000.0f ? juce::Justification::centredRight : juce::Justification::centred);
+        int lx = f <= 20.0f ? static_cast<int> (x) : (f >= 20000.0f ? static_cast<int> (x) - 30 : static_cast<int> (x) - 15);
+        g.setColour (Colours::muted);
+        g.drawText (text, lx, freqLabelArea.getY(), 30, freqLabelArea.getHeight(), just, false);
     }
 
-    // Muted Horizontal dB Grid Lines
-    const float dbGrid[] = { 20.0f, 6.0f, -12.0f, -24.0f, -36.0f, -48.0f, -60.0f, -72.0f };
-    for (float db : dbGrid)
+    juce::Graphics::ScopedSaveState clipState (g);
     {
-        float normY = juce::jmap (db, -80.0f, 20.0f, 1.0f, 0.0f);
-        float y = normY * bounds.getHeight();
-        g.setColour (isDark ? juce::Colours::white.withAlpha(0.08f) : juce::Colours::black.withAlpha(0.08f));
-        g.drawHorizontalLine (juce::roundToInt (y), 0.0f, bounds.getWidth());
-
-        g.setColour (juce::Colour (0xff94a3b8));
-        g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
-        g.drawText (juce::String (static_cast<int> (db)), static_cast<int> (bounds.getWidth()) - 35, static_cast<int> (y) - 10, 30, 12, juce::Justification::right, false);
+        juce::Path clip;
+        clip.addRoundedRectangle (plot, 12.0f);
+        g.reduceClipRegion (clip);
     }
 
-    // BluPrint Solid White 0 dB Ceiling Line
-    float zeroY = juce::jmap (0.0f, -80.0f, 20.0f, 1.0f, 0.0f) * bounds.getHeight();
-    g.setColour (juce::Colours::white);
-    g.drawHorizontalLine (juce::roundToInt (zeroY), 0.0f, bounds.getWidth());
-    g.setFont (juce::FontOptions (15.5f, juce::Font::bold));
-    g.drawText ("0 dB", static_cast<int> (bounds.getWidth()) - 40, static_cast<int> (zeroY) - 14, 35, 14, juce::Justification::right, false);
-
-    // Target Placement Zone Overlay Cards (5 Regional Frequency Zones: Sub, Bass, Low Mid, High Mid, Highs)
-    struct TargetZone {
-        float startFreq;
-        float endFreq;
-        juce::Colour borderCol;
-        juce::Colour fillCol;
-        const char* name;
-    };
-
+    // Frequency zones: alternating faint washes, labels + regional peaks at top
+    struct TargetZone { float startFreq, endFreq; const char* name; };
     const TargetZone zones[5] = {
-        { 20.0f,   60.0f,    juce::Colour (0xff8800ff), juce::Colour (0x0c8800ff), "SUB" },
-        { 60.0f,   250.0f,   juce::Colour (0xff0066ff), juce::Colour (0x0c0066ff), "BASS" },
-        { 250.0f,  2000.0f,  juce::Colour (0xff65cbe5), juce::Colour (0x0c65cbe5), "LOW MID" },
-        { 2000.0f, 8000.0f,  juce::Colour (0xffffcc00), juce::Colour (0x0cffcc00), "HIGH MID" },
-        { 8000.0f, 20000.0f, juce::Colour (0xffff00ff), juce::Colour (0x0cff00ff), "HIGHS" }
+        { 20.0f,   60.0f,    "SUB" },
+        { 60.0f,   250.0f,   "BASS" },
+        { 250.0f,  2000.0f,  "LOW MID" },
+        { 2000.0f, 8000.0f,  "HIGH MID" },
+        { 8000.0f, 20000.0f, "HIGHS" }
     };
 
     uint32_t now = juce::Time::getMillisecondCounter();
@@ -266,210 +552,150 @@ void SpectrumAnalyzerComponent::paint (juce::Graphics& g)
     for (size_t i = 0; i < 5; ++i)
     {
         const auto& zone = zones[i];
-        float normX1 = (std::log10 (zone.startFreq) - minLog) / (maxLog - minLog);
-        float normX2 = (std::log10 (zone.endFreq) - minLog) / (maxLog - minLog);
+        float x1 = xForFreq (zone.startFreq);
+        float x2 = xForFreq (zone.endFreq);
 
-        float x1 = normX1 * bounds.getWidth();
-        float x2 = normX2 * bounds.getWidth();
-
-        g.setColour (zone.fillCol);
-        g.fillRect (x1, 0.0f, x2 - x1, bounds.getHeight());
-
-        g.setColour (zone.borderCol.withAlpha (0.15f));
-        g.drawVerticalLine (juce::roundToInt (x1), 0.0f, bounds.getHeight());
-
-        int badgeW = std::min (static_cast<int> (x2 - x1 - 4), 85);
-        if (badgeW > 25)
+        if (i % 2 == 1)
         {
-            // Header badge card background
-            g.setColour (juce::Colour (0xee0b0e17));
-            g.fillRoundedRectangle (x1 + 3.0f, 4.0f, static_cast<float> (badgeW), 28.0f, 3.0f);
+            g.setColour (juce::Colours::white.withAlpha (0.018f));
+            g.fillRect (x1, plot.getY(), x2 - x1, plot.getHeight());
+        }
 
-            g.setColour (zone.borderCol);
-            g.drawRoundedRectangle (x1 + 3.0f, 4.0f, static_cast<float> (badgeW), 28.0f, 3.0f, 1.0f);
+        if (i > 0)
+        {
+            g.setColour (Colours::divider);
+            g.drawVerticalLine (juce::roundToInt (x1), plot.getY(), plot.getBottom());
+        }
 
-            // Row 1: Zone Name
-            g.setFont (juce::FontOptions (13.5f, juce::Font::bold));
-            g.setColour (isDark ? juce::Colour (0xff94a3b8) : juce::Colour (0xff64748b));
-            g.drawText (zone.name, static_cast<int> (x1 + 3), 5, badgeW, 11, juce::Justification::centred, false);
+        int zoneW = static_cast<int> (x2 - x1);
+        if (zoneW > 34)
+        {
+            auto label = juce::Rectangle<int> (static_cast<int> (x1) + 8, static_cast<int> (plot.getY()) + 8, zoneW - 12, 14);
+            caption (g, zone.name, label, Colours::faint);
 
-            // Row 2: Regional Peak Readout ("Peak: XX.X")
             float peakVal = currentBandPeaks[i];
-            juce::String peakStr = (peakVal <= -99.0f) ? "Peak: -INF" : ("Peak: " + juce::String (peakVal, 1));
-
-            // 3-second red peak-hold timer check
             bool isRed = (now - bandPeakRedTimestampsMs[i] < 3000);
-            juce::Colour textColor = isRed ? juce::Colour (0xffff3355) : (isDark ? juce::Colour (0xff65cbe5) : juce::Colour (0xff0284c7));
-
-            g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
-            g.setColour (textColor);
-            g.drawText (peakStr, static_cast<int> (x1 + 3), 16, badgeW, 14, juce::Justification::centred, false);
+            g.setFont (mono (14.0f, true));
+            g.setColour (isRed ? Colours::danger : Colours::accent);
+            g.drawText (formatDb (peakVal), label.translated (0, 15).withHeight (16), juce::Justification::centredLeft, false);
         }
     }
 
-    // Peak "Shadow" Decay Trace Line & Fill
-    juce::Path peakPath;
+    // dB grid (inside the well, right-aligned labels)
+    const float dbGrid[] = { 12.0f, 6.0f, -12.0f, -24.0f, -36.0f, -48.0f, -60.0f, -72.0f };
+    g.setFont (mono (11.5f));
+    for (float db : dbGrid)
+    {
+        float y = yForDb (db);
+        g.setColour (Colours::divider);
+        g.drawHorizontalLine (juce::roundToInt (y), plot.getX(), plot.getRight());
+        g.setColour (Colours::faint);
+        g.drawText (juce::String (static_cast<int> (db)), static_cast<int> (plot.getRight()) - 40, static_cast<int> (y) - 14, 32, 12, juce::Justification::right, false);
+    }
+
+    // 0 dB ceiling
+    float zeroY = yForDb (0.0f);
+    g.setColour (Colours::text.withAlpha (0.35f));
+    g.drawHorizontalLine (juce::roundToInt (zeroY), plot.getX(), plot.getRight());
+    g.setFont (mono (12.0f, true));
+    g.setColour (Colours::text);
+    g.drawText ("0 dB", static_cast<int> (plot.getRight()) - 48, static_cast<int> (zeroY) - 15, 40, 13, juce::Justification::right, false);
+
     const size_t numPoints = scopeData.size();
-    if (numPoints > 4)
+
+    auto buildSmoothPath = [&] (const auto& data, juce::Path& path)
     {
-        float prevX = 0.0f;
-        float prevY = (1.0f - peakScopeData[0]) * bounds.getHeight();
-        peakPath.startNewSubPath (prevX, prevY);
+        float prevX = plot.getX();
+        float prevY = yForLevel (data[0]);
+        path.startNewSubPath (prevX, prevY);
 
         for (size_t i = 1; i < numPoints; i += 2)
         {
-            float normX = static_cast<float> (i) / static_cast<float> (numPoints - 1);
-            float x = normX * bounds.getWidth();
-            float level = peakScopeData[i];
-            float y = (1.0f - level) * bounds.getHeight();
-
-            float midX = (prevX + x) * 0.5f;
-            peakPath.quadraticTo (prevX, prevY, midX, (prevY + y) * 0.5f);
-
+            float x = plot.getX() + static_cast<float> (i) / static_cast<float> (numPoints - 1) * plot.getWidth();
+            float y = yForLevel (data[i]);
+            path.quadraticTo (prevX, prevY, (prevX + x) * 0.5f, (prevY + y) * 0.5f);
             prevX = x;
             prevY = y;
         }
-        peakPath.lineTo (bounds.getWidth(), prevY);
-    }
-    
-    juce::Path peakFillPath = peakPath;
-    peakFillPath.lineTo (bounds.getWidth(), bounds.getHeight());
-    peakFillPath.lineTo (0.0f, bounds.getHeight());
-    peakFillPath.closeSubPath();
+        path.lineTo (plot.getRight(), prevY);
+    };
 
-    g.setColour (juce::Colour (0x1e65cbe5)); // translucent peak shadow fill
-    g.fillPath (peakFillPath);
-
-    g.setColour (juce::Colour (0x8865cbe5)); // peak shadow trace stroke
-    g.strokePath (peakPath, juce::PathStrokeType (1.4f));
-
-    // BluPrint Reference Spectrum Curve (Warm Copper Orange #F97316 Overlay)
-    juce::Path refPath;
-    bool refStarted = false;
-    for (size_t i = 0; i < refScopeData.size(); ++i)
+    auto closeToFloor = [&] (juce::Path path)
     {
-        float normX = static_cast<float> (i) / static_cast<float> (refScopeData.size() - 1);
-        float x = normX * bounds.getWidth();
-        float level = refScopeData[i];
-        float y = (1.0f - level) * bounds.getHeight();
-
-        if (!refStarted)
-        {
-            refPath.startNewSubPath (x, y);
-            refStarted = true;
-        }
-        else
-        {
-            refPath.lineTo (x, y);
-        }
-    }
-
-    juce::Path refFillPath = refPath;
-    refFillPath.lineTo (bounds.getWidth(), bounds.getHeight());
-    refFillPath.lineTo (0.0f, bounds.getHeight());
-    refFillPath.closeSubPath();
-
-    juce::ColourGradient copperGradient (
-        juce::Colour (0x45f97316), 0.0f, 0.0f,
-        juce::Colour (0x020b0e17), 0.0f, bounds.getHeight(), false
-    );
-    g.setGradientFill (copperGradient);
-    g.fillPath (refFillPath);
-
-    g.setColour (juce::Colour (0xfff97316)); // BluPrint Copper Orange Stroke
-    g.strokePath (refPath, juce::PathStrokeType (2.0f));
-
-    // BluPrint Live Main Spectrum Curve (Cobalt Cyan/Blue #38BDF8)
-    juce::Path spectrumPath;
-    spectrumPath.startNewSubPath (0.0f, bounds.getHeight());
+        path.lineTo (plot.getRight(), plot.getBottom());
+        path.lineTo (plot.getX(), plot.getBottom());
+        path.closeSubPath();
+        return path;
+    };
 
     if (numPoints > 4)
     {
-        float prevX = 0.0f;
-        float prevY = (1.0f - scopeData[0]) * bounds.getHeight();
-        spectrumPath.lineTo (prevX, prevY);
+        // Peak "shadow" decay trace
+        juce::Path peakPath;
+        buildSmoothPath (peakScopeData, peakPath);
+        g.setColour (Colours::accent.withAlpha (0.05f));
+        g.fillPath (closeToFloor (peakPath));
+        g.setColour (Colours::accentDim.withAlpha (0.75f));
+        g.strokePath (peakPath, juce::PathStrokeType (1.3f));
 
-        for (size_t i = 1; i < numPoints; i += 2)
-        {
-            float normX = static_cast<float> (i) / static_cast<float> (numPoints - 1);
-            float x = normX * bounds.getWidth();
-            float level = scopeData[i];
-            float y = (1.0f - level) * bounds.getHeight();
+        // Reference curve (amber)
+        juce::Path refPath;
+        refPath.startNewSubPath (plot.getX(), yForLevel (refScopeData[0]));
+        for (size_t i = 1; i < refScopeData.size(); ++i)
+            refPath.lineTo (plot.getX() + static_cast<float> (i) / static_cast<float> (refScopeData.size() - 1) * plot.getWidth(),
+                            yForLevel (refScopeData[i]));
+        g.setColour (Colours::amber.withAlpha (0.07f));
+        g.fillPath (closeToFloor (refPath));
+        g.setColour (Colours::amber);
+        g.strokePath (refPath, juce::PathStrokeType (1.6f));
 
-            float midX = (prevX + x) * 0.5f;
-            spectrumPath.quadraticTo (prevX, prevY, midX, (prevY + y) * 0.5f);
-
-            prevX = x;
-            prevY = y;
-        }
-        spectrumPath.lineTo (bounds.getWidth(), prevY);
+        // Live spectrum (accent cyan)
+        juce::Path livePath;
+        buildSmoothPath (scopeData, livePath);
+        juce::ColourGradient liveFill (Colours::accent.withAlpha (0.22f), 0.0f, plot.getY() + plot.getHeight() * 0.2f,
+                                       Colours::accent.withAlpha (0.02f), 0.0f, plot.getBottom(), false);
+        g.setGradientFill (liveFill);
+        g.fillPath (closeToFloor (livePath));
+        g.setColour (Colours::accent);
+        g.strokePath (livePath, juce::PathStrokeType (2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     }
-    spectrumPath.lineTo (bounds.getWidth(), bounds.getHeight());
-    spectrumPath.closeSubPath();
 
-    juce::ColourGradient cyanGradient (
-        juce::Colour (0x551e3a8a), 0.0f, 0.0f,
-        juce::Colour (0x020b0e17), 0.0f, bounds.getHeight(), false
-    );
-    g.setGradientFill (cyanGradient);
-    g.fillPath (spectrumPath);
-
-    g.setColour (juce::Colour (0xff65cbe5)); // BluPrint Cobalt Cyan Stroke
-    g.strokePath (spectrumPath, juce::PathStrokeType (2.2f));
-
-    // Interactive Crosshair Inspector Node
-    if (mouseInside)
+    // Crosshair inspector
+    if (mouseInside && numPoints > 0)
     {
-        float normX = static_cast<float> (mousePos.x) / bounds.getWidth();
+        float normX = (static_cast<float> (mousePos.x) - plot.getX()) / plot.getWidth();
         float logFreq = std::pow (10.0f, minLog + normX * (maxLog - minLog));
 
         size_t scopeIndex = static_cast<size_t> (juce::jlimit (0, static_cast<int> (numPoints - 1), static_cast<int> (normX * static_cast<float> (numPoints))));
         float activeLevel = scopeData[scopeIndex];
-        float activeY = (1.0f - activeLevel) * bounds.getHeight();
-        float inspectDb = juce::jmap (activeLevel, 0.0f, 1.0f, -80.0f, 20.0f);
+        float activeY = yForLevel (activeLevel);
+        float inspectDb = juce::jmap (activeLevel, 0.0f, 1.0f, specMinDb, specMaxDb);
 
         juce::String noteName = getNoteNameForFrequency (logFreq);
 
-        g.setColour (juce::Colour (0xaa65cbe5));
-        juce::Path crosshairPath;
-        crosshairPath.startNewSubPath (static_cast<float> (mousePos.x), 0.0f);
-        crosshairPath.lineTo (static_cast<float> (mousePos.x), bounds.getHeight());
-        crosshairPath.startNewSubPath (0.0f, activeY);
-        crosshairPath.lineTo (bounds.getWidth(), activeY);
-
-        juce::PathStrokeType chStroke (1.0f);
-        float dashPattern[] = { 4.0f, 4.0f };
-        chStroke.createDashedStroke (crosshairPath, crosshairPath, dashPattern, 2);
-        g.strokePath (crosshairPath, chStroke);
-
-        g.setColour (juce::Colour (0xff65cbe5));
-        g.drawEllipse (static_cast<float> (mousePos.x - 6), activeY - 6.0f, 12.0f, 12.0f, 2.0f);
-        g.setColour (juce::Colours::white);
-        g.fillEllipse (static_cast<float> (mousePos.x - 2), activeY - 2.0f, 4.0f, 4.0f);
+        drawCrosshair (g, { static_cast<float> (mousePos.x), activeY }, plot);
 
         juce::String infoText = (logFreq >= 1000.0f ? juce::String (logFreq / 1000.0f, 2) + " kHz" : juce::String (logFreq, 1) + " Hz")
-                                + "  |  " + juce::String (inspectDb, 1) + " dB"
-                                + (noteName.isNotEmpty() ? "  |  " + noteName : "");
-
-        g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
-        int badgeW = g.getCurrentFont().getStringWidth (infoText) + 18;
-        int badgeX = juce::jlimit (4, static_cast<int> (bounds.getWidth()) - badgeW - 4, mousePos.x + 14);
-        int badgeY = juce::jlimit (4, static_cast<int> (bounds.getHeight()) - 28, mousePos.y - 24);
-
-        g.setColour (juce::Colour (0xfa0b0e17));
-        g.fillRoundedRectangle (static_cast<float> (badgeX), static_cast<float> (badgeY), static_cast<float> (badgeW), 22.0f, 4.0f);
-        g.setColour (juce::Colour (0xff65cbe5));
-        g.drawRoundedRectangle (static_cast<float> (badgeX), static_cast<float> (badgeY), static_cast<float> (badgeW), 22.0f, 4.0f, 1.2f);
-        g.drawText (infoText, badgeX, badgeY, badgeW, 22, juce::Justification::centred, false);
+                                + "  " + juce::String (inspectDb, 1) + " dB"
+                                + (noteName.isNotEmpty() ? "  " + noteName : "");
+        drawInspectorBadge (g, infoText, mousePos, plotArea);
     }
 }
 
 //==============================================================================
-// OscilloscopeComponent Implementation (BluPrint Waveform Roll)
+// OscilloscopeComponent Implementation
 //==============================================================================
 OscilloscopeComponent::OscilloscopeComponent()
 {
     oscBuffer.fill (0.0f);
+}
+
+void OscilloscopeComponent::resized()
+{
+    auto content = getLocalBounds().reduced (16);
+    headingArea = content.removeFromTop (22);
+    content.removeFromTop (10);
+    waveWell = content;
 }
 
 void OscilloscopeComponent::mouseMove (const juce::MouseEvent& event)
@@ -496,66 +722,56 @@ void OscilloscopeComponent::updateOscilloscopeData (const float* ringData, int w
 
 void OscilloscopeComponent::paint (juce::Graphics& g)
 {
-    auto bounds = getLocalBounds().toFloat();
+    using namespace Neu;
 
-    // Liquid Glass Background
-    g.setColour (isDark ? juce::Colour (0xffffffff).withAlpha (0.04f) : juce::Colour (0xff000000).withAlpha (0.03f));
-    g.fillRoundedRectangle (bounds, 12.0f);
-    g.setColour (isDark ? juce::Colour (0xffffffff).withAlpha (0.15f) : juce::Colour (0xff000000).withAlpha (0.15f));
-    g.drawRoundedRectangle (bounds, 12.0f, 0.75f);
+    sectionHeading (g, "Oscilloscope", headingArea);
+    caption (g, "Auto gain", headingArea, Colours::faint, juce::Justification::centredRight);
 
-    // Card Header Title
-    g.setFont (juce::FontOptions (15.5f, juce::Font::bold));
-    g.setColour (isDark ? juce::Colour (0xff94a3b8) : juce::Colour (0xff64748b));
-    g.drawText ("OSCILLOSCOPE", 12, 6, 200, 16, juce::Justification::left, false);
+    auto well = waveWell.toFloat();
+    inset (g, well, 12.0f, Colours::well);
 
-    // Strictly bounded inner waveform frame (excluding header title & card padding)
-    auto waveArea = bounds.reduced (11.5f, 6.0f).withTrimmedTop (22.0f);
+    auto waveArea = well.reduced (10.0f, 10.0f);
     if (waveArea.getWidth() <= 10.0f || waveArea.getHeight() <= 10.0f)
         return;
 
-    // Grid Center Guide Lines
-    g.setColour (isDark ? juce::Colours::white.withAlpha(0.08f) : juce::Colours::black.withAlpha(0.08f));
-    g.drawHorizontalLine (juce::roundToInt (waveArea.getCentreY()), waveArea.getX(), waveArea.getRight());
-    g.drawVerticalLine (juce::roundToInt (waveArea.getCentreX()), waveArea.getY(), waveArea.getBottom());
-
-    // Clip rendering strictly to waveArea bounds so waveform never spills outside UI frame
     juce::Graphics::ScopedSaveState saveState (g);
-    g.reduceClipRegion (waveArea.toNearestInt());
+    {
+        juce::Path clip;
+        clip.addRoundedRectangle (well, 12.0f);
+        g.reduceClipRegion (clip);
+    }
+
+    g.setColour (Colours::divider);
+    g.drawHorizontalLine (juce::roundToInt (waveArea.getCentreY()), well.getX(), well.getRight());
+    for (int i = 1; i < 4; ++i)
+        g.drawVerticalLine (juce::roundToInt (waveArea.getX() + waveArea.getWidth() * static_cast<float> (i) / 4.0f), well.getY(), well.getBottom());
 
     const size_t totalSamples = oscBuffer.size();
     if (totalSamples < 2)
         return;
 
-    // Calculate maximum peak for dynamic vertical height normalization
+    // Dynamic normalisation to the loudest sample on screen
     float maxPeak = 0.0001f;
     for (float s : oscBuffer)
         maxPeak = std::max (maxPeak, std::abs (s));
 
-    // Dynamic Normalization: available half-height is 48% of waveArea height (leaving 2% margin)
     float maxHalfHeight = waveArea.getHeight() * 0.48f;
     float normGain = maxHalfHeight / maxPeak;
     float centerY = waveArea.getCentreY();
     float stepX = waveArea.getWidth() / static_cast<float> (totalSamples - 1);
 
-    // Pre-calculate top (upper contour) and bottom (lower contour) symmetrical peak coordinates
     std::vector<float> topY (totalSamples);
     std::vector<float> bottomY (totalSamples);
 
     for (size_t i = 0; i < totalSamples; ++i)
     {
         int readIdx = (writePosition + static_cast<int> (i)) % static_cast<int> (totalSamples);
-        float sampleMag = std::abs (oscBuffer[static_cast<size_t> (readIdx)]);
-        float ampY = std::min (sampleMag * normGain, maxHalfHeight);
-
+        float ampY = std::min (std::abs (oscBuffer[static_cast<size_t> (readIdx)]) * normGain, maxHalfHeight);
         topY[i] = centerY - ampY;
         bottomY[i] = centerY + ampY;
     }
 
-    // Construct continuous symmetrical DAW audio region polygon path
     juce::Path wavePath;
-
-    // Upper contour (chronological left to right)
     for (size_t i = 0; i < totalSamples; ++i)
     {
         float x = waveArea.getX() + static_cast<float> (i) * stepX;
@@ -564,71 +780,58 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
         else
             wavePath.lineTo (x, topY[i]);
     }
-
-    // Lower contour (right to left)
     for (int i = static_cast<int> (totalSamples) - 1; i >= 0; --i)
-    {
-        float x = waveArea.getX() + static_cast<float> (i) * stepX;
-        wavePath.lineTo (x, bottomY[static_cast<size_t> (i)]);
-    }
-
+        wavePath.lineTo (waveArea.getX() + static_cast<float> (i) * stepX, bottomY[static_cast<size_t> (i)]);
     wavePath.closeSubPath();
 
-    // Vibrant Liquid Gradient Fill
-    juce::ColourGradient fillGradient (
-        isDark ? juce::Colour (0xe600f0ff) : juce::Colour (0xe60284c7), 0.0f, centerY - maxHalfHeight,
-        isDark ? juce::Colour (0x1100f0ff) : juce::Colour (0x220284c7), 0.0f, centerY + maxHalfHeight, false
-    );
-    g.setGradientFill (fillGradient);
+    // Solid accent cyan on the near-black strip
+    g.setColour (Colours::accent);
     g.fillPath (wavePath);
 
-    // Crisp outer contour stroke
-    g.setColour (isDark ? juce::Colour (0xff7ce8e8) : juce::Colour (0xff1d4ed8));
-    g.strokePath (wavePath, juce::PathStrokeType (1.5f));
-
-    // Synchronized Target Goal Line on Oscilloscope dynamically scaled with peak auto-zoom multiplier
-    // (hidden by the HIDE button - showGoal)
-    if (showGoal)
+    // Playhead: newest audio enters at the right edge
     {
-        float goalLinear = juce::Decibels::decibelsToGain (goalDb);
-        float goalAmp = goalLinear * normGain;
-        float rawYTop = centerY - goalAmp;
-        float rawYBottom = centerY + goalAmp;
-
-        float goalYTop = juce::jlimit (waveArea.getY() + 1.0f, waveArea.getBottom() - 1.0f, rawYTop);
-        float goalYBottom = juce::jlimit (waveArea.getY() + 1.0f, waveArea.getBottom() - 1.0f, rawYBottom);
-
-        g.setColour (isDark ? juce::Colour (0xcc00ffff) : juce::Colour (0xcc0284c7));
-        juce::Path goalPath;
-        goalPath.startNewSubPath (waveArea.getX(), goalYTop);
-        goalPath.lineTo (waveArea.getRight() - 65.0f, goalYTop);
-        goalPath.startNewSubPath (waveArea.getX(), goalYBottom);
-        goalPath.lineTo (waveArea.getRight() - 65.0f, goalYBottom);
-
-        juce::PathStrokeType goalStroke (1.5f);
-        float dash[] = { 6.0f, 4.0f };
-        goalStroke.createDashedStroke (goalPath, goalPath, dash, 2);
-        g.strokePath (goalPath, goalStroke);
-
-        juce::String goalLabel = (rawYTop < waveArea.getY()) ? "[^ TARGET: " + juce::String (goalDb, 1) + "]" : "TARGET: " + juce::String (goalDb, 1) + " LUFS";
-        juce::Font badgeFont (juce::FontOptions (15.5f, juce::Font::bold));
-        g.setFont (badgeFont);
-
-        int textWidth = badgeFont.getStringWidth (goalLabel) + 16;
-        float textY = juce::jlimit (waveArea.getY() + 2.0f, waveArea.getBottom() - 22.0f, goalYTop - 10.0f);
-        int targetBadgeX = static_cast<int> (waveArea.getRight()) - textWidth - 10;
-
-        juce::Colour activeColour = isDark ? juce::Colour (0xff00ffff) : juce::Colour (0xff0284c7);
-
-        g.setColour (isDark ? juce::Colour (0xff0a111c) : juce::Colour (0xfff8fafc));
-        g.fillRoundedRectangle (static_cast<float> (targetBadgeX), textY, static_cast<float> (textWidth), 20.0f, 4.0f);
-
-        g.setColour (activeColour);
-        g.drawRoundedRectangle (static_cast<float> (targetBadgeX), textY, static_cast<float> (textWidth), 20.0f, 4.0f, 1.2f);
-        g.drawText (goalLabel, targetBadgeX, static_cast<int> (textY), textWidth, 20, juce::Justification::centred, false);
+        float px = waveArea.getRight();
+        juce::Path head;
+        head.addRectangle (px - 0.75f, well.getY(), 1.5f, well.getHeight());
+        glow (g, head, Colours::playhead.withAlpha (0.5f), 5);
+        g.setColour (Colours::playhead);
+        g.fillPath (head);
     }
 
-    // Interactive Hover Inspector (Text sticks to cursor, Dot sticks to waveform curve)
+    // Target lines (hidden by the HIDE button)
+    if (showGoal)
+    {
+        float goalAmp = juce::Decibels::decibelsToGain (goalDb) * normGain;
+        float rawYTop = centerY - goalAmp;
+        float goalYTop = juce::jlimit (waveArea.getY() + 1.0f, waveArea.getBottom() - 1.0f, rawYTop);
+        float goalYBottom = juce::jlimit (waveArea.getY() + 1.0f, waveArea.getBottom() - 1.0f, centerY + goalAmp);
+
+        juce::Path goalPath;
+        goalPath.startNewSubPath (waveArea.getX(), goalYTop);
+        goalPath.lineTo (waveArea.getRight() - 8.0f, goalYTop);
+        goalPath.startNewSubPath (waveArea.getX(), goalYBottom);
+        goalPath.lineTo (waveArea.getRight() - 8.0f, goalYBottom);
+
+        juce::PathStrokeType goalStroke (1.4f);
+        float dash[] = { 7.0f, 5.0f };
+        juce::Path dashed;
+        goalStroke.createDashedStroke (dashed, goalPath, dash, 2);
+        g.setColour (Colours::text.withAlpha (0.85f));
+        g.fillPath (dashed);
+
+        juce::String goalLabel = (rawYTop < waveArea.getY() ? "^ " : "") + juce::String (goalDb, 1) + " LUFS";
+        auto font = mono (12.5f, true);
+        int w = (juce::roundToInt (font.getStringWidthFloat (goalLabel)) + 22 + 7) / 8 * 8;
+        auto badge = juce::Rectangle<float> (waveArea.getRight() - static_cast<float> (w) - 12.0f,
+                                             juce::jlimit (waveArea.getY(), waveArea.getBottom() - 22.0f, goalYTop - 11.0f),
+                                             static_cast<float> (w), 22.0f);
+        raised (g, badge, 11.0f, Depth::small, Colours::highlight);
+        g.setFont (font);
+        g.setColour (Colours::text);
+        g.drawText (goalLabel, badge, juce::Justification::centred, false);
+    }
+
+    // Hover inspector
     if (mouseInside && mousePos.x >= waveArea.getX() && mousePos.x <= waveArea.getRight())
     {
         float normX = (static_cast<float> (mousePos.x) - waveArea.getX()) / waveArea.getWidth();
@@ -639,90 +842,56 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
         float sampleMag = std::abs (oscBuffer[static_cast<size_t> (readIdx)]);
         float sampleDb = (sampleMag <= 0.00001f) ? -100.0f : juce::Decibels::gainToDecibels (sampleMag, -100.0f);
 
-        // Dashed crosshair lines
-        juce::Path chPath;
-        chPath.startNewSubPath (static_cast<float> (mousePos.x), waveArea.getY());
-        chPath.lineTo (static_cast<float> (mousePos.x), waveArea.getBottom());
-        chPath.startNewSubPath (waveArea.getX(), activeY);
-        chPath.lineTo (waveArea.getRight(), activeY);
-
-        juce::PathStrokeType chStroke (1.0f);
-        float dashPattern[] = { 4.0f, 4.0f };
-        chStroke.createDashedStroke (chPath, chPath, dashPattern, 2);
-        g.setColour (juce::Colour (0xaa65cbe5));
-        g.strokePath (chPath, chStroke);
-
-        // Dot tracking node sticking directly to waveform curve
-        g.setColour (juce::Colour (0xff65cbe5));
-        g.drawEllipse (static_cast<float> (mousePos.x - 6), activeY - 6.0f, 12.0f, 12.0f, 2.0f);
-        g.setColour (juce::Colours::white);
-        g.fillEllipse (static_cast<float> (mousePos.x - 2), activeY - 2.0f, 4.0f, 4.0f);
-
-        // Text badge sticking directly to user's mouse cursor
-        juce::String infoText = "LEVEL: " + (sampleDb <= -99.0f ? "-INF" : juce::String (sampleDb, 1) + " dB");
-        g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
-        int badgeW = g.getCurrentFont().getStringWidth (infoText) + 18;
-        int badgeX = juce::jlimit (4, static_cast<int> (bounds.getWidth()) - badgeW - 4, mousePos.x + 14);
-        int badgeY = juce::jlimit (4, static_cast<int> (bounds.getHeight()) - 28, mousePos.y - 24);
-
-        g.setColour (juce::Colour (0xfa0b0e17));
-        g.fillRoundedRectangle (static_cast<float> (badgeX), static_cast<float> (badgeY), static_cast<float> (badgeW), 22.0f, 4.0f);
-        g.setColour (juce::Colour (0xff65cbe5));
-        g.drawRoundedRectangle (static_cast<float> (badgeX), static_cast<float> (badgeY), static_cast<float> (badgeW), 22.0f, 4.0f, 1.2f);
-        g.drawText (infoText, badgeX, badgeY, badgeW, 22, juce::Justification::centred, false);
+        drawCrosshair (g, { static_cast<float> (mousePos.x), activeY }, well);
+        drawInspectorBadge (g, "LEVEL " + (sampleDb <= -99.0f ? juce::String ("-INF") : juce::String (sampleDb, 1) + " dB"),
+                            mousePos, waveWell);
     }
 }
 
 //==============================================================================
-// VectorscopeComponent Implementation (BluPrint Dual-Tone Matrix)
+// VectorscopeComponent Implementation
 //==============================================================================
 VectorscopeComponent::VectorscopeComponent()
 {
     leftBuffer.fill (0.0f);
     rightBuffer.fill (0.0f);
 
-    auto setZoom = [this] (float zoom) {
-        currentZoom = zoom;
-        repaint();
+    auto setup = [this] (juce::TextButton& b, float zoom, bool initiallyOn)
+    {
+        Neu::setStyle (b, "seg");
+        b.setClickingTogglesState (true);
+        b.setRadioGroupId (301);
+        b.setToggleState (initiallyOn, juce::dontSendNotification);
+        b.setTooltip ("Vectorscope zoom " + b.getButtonText());
+        b.onClick = [this, zoom]() { currentZoom = zoom; repaint(); };
+        addAndMakeVisible (b);
     };
 
-    zoom05Button.setClickingTogglesState (true);
-    zoom05Button.setRadioGroupId (301);
-    zoom05Button.onClick = [setZoom]() { setZoom (0.5f); };
-    addAndMakeVisible (zoom05Button);
+    setup (zoom05Button, 0.5f, false);
+    setup (zoom10Button, 1.0f, false);
+    setup (zoom20Button, 2.0f, true);
+    setup (zoom40Button, 4.0f, false);
 
-    zoom10Button.setClickingTogglesState (true);
-    zoom10Button.setRadioGroupId (301);
-    zoom10Button.setToggleState (false, juce::dontSendNotification);
-    zoom10Button.onClick = [setZoom]() { setZoom (1.0f); };
-    addAndMakeVisible (zoom10Button);
-
-    zoom20Button.setClickingTogglesState (true);
-    zoom20Button.setRadioGroupId (301);
-    zoom20Button.setToggleState (true, juce::dontSendNotification);
-    zoom20Button.onClick = [setZoom]() { setZoom (2.0f); };
-    addAndMakeVisible (zoom20Button);
-    
-    zoom40Button.setClickingTogglesState (true);
-    zoom40Button.setRadioGroupId (301);
-    zoom40Button.onClick = [setZoom]() { setZoom (4.0f); };
-    addAndMakeVisible (zoom40Button);
-    
     currentZoom = 2.0f;
 }
 
 void VectorscopeComponent::resized()
 {
-    auto bounds = getLocalBounds();
-    auto topArea = bounds.removeFromTop (26).reduced (8, 4);
+    auto content = getLocalBounds().reduced (16);
+    headingArea = content.removeFromTop (22);
+    content.removeFromTop (10);
+    corrArea = content.removeFromBottom (30);
+    content.removeFromBottom (10);
+    scopeWell = content;
 
-    zoom40Button.setBounds (topArea.removeFromRight (32));
-    topArea.removeFromRight (4);
-    zoom20Button.setBounds (topArea.removeFromRight (32));
-    topArea.removeFromRight (4);
-    zoom10Button.setBounds (topArea.removeFromRight (32));
-    topArea.removeFromRight (4);
-    zoom05Button.setBounds (topArea.removeFromRight (34));
+    // Zoom segments sit on the heading row, right-aligned
+    auto row = headingArea.withSizeKeepingCentre (headingArea.getWidth(), 24);
+    juce::TextButton* buttons[] = { &zoom40Button, &zoom20Button, &zoom10Button, &zoom05Button };
+    for (auto* b : buttons)
+    {
+        b->setBounds (row.removeFromRight (40).expanded (Neu::buttonPad));
+        row.removeFromRight (8);
+    }
 }
 
 void VectorscopeComponent::updateVectorscopeData (const float* left, const float* right, size_t size, float phaseCorr)
@@ -731,55 +900,45 @@ void VectorscopeComponent::updateVectorscopeData (const float* left, const float
     std::copy_n (left, count, leftBuffer.begin());
     std::copy_n (right, count, rightBuffer.begin());
     currentPhaseCorrelation = phaseCorr;
-    repaint();
+    repaint (scopeWell.getUnion (corrArea));
 }
 
 void VectorscopeComponent::paint (juce::Graphics& g)
 {
-    auto bounds = getLocalBounds().toFloat();
+    using namespace Neu;
 
-    // Liquid Glass Background
-    g.setColour (isDark ? juce::Colour (0xffffffff).withAlpha (0.04f) : juce::Colour (0xff000000).withAlpha (0.03f));
-    g.fillRoundedRectangle (bounds, 12.0f);
-    g.setColour (isDark ? juce::Colour (0xffffffff).withAlpha (0.15f) : juce::Colour (0xff000000).withAlpha (0.15f));
-    g.drawRoundedRectangle (bounds, 12.0f, 0.75f);
+    sectionHeading (g, "Vectorscope", headingArea);
 
-    // Card Header Title
-    g.setFont (juce::FontOptions (15.5f, juce::Font::bold));
-    g.setColour (isDark ? juce::Colour (0xff94a3b8) : juce::Colour (0xff64748b));
-    g.drawText ("VECTORSCOPE", 12, 6, 120, 16, juce::Justification::left, false);
+    auto well = scopeWell.toFloat();
+    inset (g, well, 12.0f, Colours::well);
 
-    // Grid Radial & Diagonal Guidelines for Half-Moon Layout
-    float radius = std::min (bounds.getWidth() * 0.45f, bounds.getHeight() - 60.0f);
-    float centerX = bounds.getCentreX();
-    float centerY = bounds.getBottom() - 30.0f; // Offset to sit just above correlation bar
+    // Half-moon grid
+    float radius = std::min (well.getWidth() * 0.45f, well.getHeight() - 22.0f);
+    float centerX = well.getCentreX();
+    float centerY = well.getBottom() - 12.0f;
 
     juce::Path gridPath;
-    juce::Rectangle<float> arcBounds (centerX - radius, centerY - radius, radius * 2.0f, radius * 2.0f);
-    gridPath.addArc (arcBounds.getX(), arcBounds.getY(), arcBounds.getWidth(), arcBounds.getHeight(), -juce::MathConstants<float>::halfPi, juce::MathConstants<float>::halfPi, true);
-
-    float halfRadius = radius * 0.5f;
-    juce::Rectangle<float> halfArcBounds (centerX - halfRadius, centerY - halfRadius, halfRadius * 2.0f, halfRadius * 2.0f);
-    gridPath.addArc (halfArcBounds.getX(), halfArcBounds.getY(), halfArcBounds.getWidth(), halfArcBounds.getHeight(), -juce::MathConstants<float>::halfPi, juce::MathConstants<float>::halfPi, true);
-
+    gridPath.addCentredArc (centerX, centerY, radius, radius, 0.0f, -juce::MathConstants<float>::halfPi, juce::MathConstants<float>::halfPi, true);
+    gridPath.addCentredArc (centerX, centerY, radius * 0.5f, radius * 0.5f, 0.0f, -juce::MathConstants<float>::halfPi, juce::MathConstants<float>::halfPi, true);
     gridPath.startNewSubPath (centerX - radius, centerY);
     gridPath.lineTo (centerX + radius, centerY);
-    
     gridPath.startNewSubPath (centerX, centerY);
     gridPath.lineTo (centerX, centerY - radius);
-
     gridPath.startNewSubPath (centerX, centerY);
     gridPath.lineTo (centerX - radius * 0.7071f, centerY - radius * 0.7071f);
-    
     gridPath.startNewSubPath (centerX, centerY);
     gridPath.lineTo (centerX + radius * 0.7071f, centerY - radius * 0.7071f);
 
-    g.setColour (isDark ? juce::Colours::white.withAlpha(0.08f) : juce::Colours::black.withAlpha(0.08f));
+    g.setColour (Colours::divider);
     g.strokePath (gridPath, juce::PathStrokeType (1.0f));
 
-    // BluPrint Dual-Tone Scatter Points (Respecting Strict Zoom Presets: .5x, 1x, 2x, 4x)
-    float zoomMultiplier = currentZoom;
+    g.setFont (mono (11.5f, true));
+    g.setColour (Colours::faint);
+    g.drawText ("L", juce::roundToInt (centerX - radius * 0.7071f) - 18, juce::roundToInt (centerY - radius * 0.7071f) - 16, 14, 14, juce::Justification::centred, false);
+    g.drawText ("R", juce::roundToInt (centerX + radius * 0.7071f) + 4,  juce::roundToInt (centerY - radius * 0.7071f) - 16, 14, 14, juce::Justification::centred, false);
+    g.drawText ("M", juce::roundToInt (centerX) - 7, juce::roundToInt (centerY - radius) - 16, 14, 14, juce::Justification::centred, false);
 
+    // Scatter (respecting the .5x / 1x / 2x / 4x zoom presets)
     for (size_t i = 0; i < leftBuffer.size(); i += 4)
     {
         float l = leftBuffer[i];
@@ -788,45 +947,48 @@ void VectorscopeComponent::paint (juce::Graphics& g)
         float x = (l - r) * 0.7071f;
         float y = (l + r) * 0.7071f;
 
-        // FOLDING MATH: Mirror negative phase signals upward into the half-moon
+        // Fold negative-phase signal upward into the half-moon
         if (y < 0.0f)
         {
             x = -x;
             y = -y;
         }
 
-        float px = centerX + x * radius * zoomMultiplier;
-        float py = centerY - y * radius * zoomMultiplier;
-
+        float px = centerX + x * radius * currentZoom;
+        float py = centerY - y * radius * currentZoom;
         float dx = px - centerX;
         float dy = py - centerY;
 
-        // Strict circular boundary clipping and half-moon clipping
         if ((dx * dx + dy * dy) <= (radius * radius) && py <= centerY)
         {
-            if (i % 8 == 0)
-                g.setColour (isDark ? juce::Colour (0xeef97316) : juce::Colour (0xeeea580c)); // Warm Copper Orange
-            else
-                g.setColour (isDark ? juce::Colour (0xee65cbe5) : juce::Colour (0xee2563eb)); // Cobalt Cyan / Blue
-
+            g.setColour (i % 8 == 0 ? Colours::accentDim : Colours::accent.withAlpha (0.9f));
             g.fillEllipse (px - 1.2f, py - 1.2f, 2.4f, 2.4f);
         }
     }
 
-    // Phase Correlation Bar at bottom (1/2 height: 13px)
-    auto corrArea = bounds.removeFromBottom (13.0f).reduced (16.0f, 1.0f);
-    g.setColour (juce::Colour (0xff161f30));
-    g.fillRoundedRectangle (corrArea, 2.5f);
+    // Phase correlation: caption + value, carved track with cyan (or red) fill from centre
+    auto area = corrArea;
+    auto textRow = area.removeFromTop (14);
+    caption (g, "Phase correlation", textRow, Colours::faint);
+    g.setFont (mono (13.0f, true));
+    g.setColour (currentPhaseCorrelation < 0.0f ? Colours::danger : Colours::accent);
+    g.drawText ((currentPhaseCorrelation >= 0.0f ? "+" : "") + juce::String (currentPhaseCorrelation, 2),
+                textRow, juce::Justification::centredRight, false);
+
+    area.removeFromTop (6);
+    auto track = area.toFloat().withHeight (10.0f);
+    inset (g, track, 5.0f, Colours::well);
 
     float normCorr = juce::jlimit (0.0f, 1.0f, juce::jmap (currentPhaseCorrelation, -1.0f, 1.0f, 0.0f, 1.0f));
-    float fillW = normCorr * corrArea.getWidth();
+    float mid = track.getCentreX();
+    float pos = track.getX() + normCorr * track.getWidth();
+    auto fill = juce::Rectangle<float>::leftTopRightBottom (std::min (mid, pos), track.getY() + 2.0f,
+                                                             std::max (mid, pos), track.getBottom() - 2.0f);
+    g.setColour (currentPhaseCorrelation < 0.0f ? Colours::danger : Colours::accent);
+    g.fillRoundedRectangle (fill, 3.0f);
 
-    g.setColour (currentPhaseCorrelation < 0.0f ? juce::Colour (0xffff3355) : juce::Colour (0xff65cbe5));
-    g.fillRoundedRectangle (corrArea.withWidth (fillW), 2.5f);
-
-    g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
-    g.setColour (juce::Colours::white);
-    g.drawText ("PHASE CORRELATION: " + juce::String (currentPhaseCorrelation, 2), static_cast<int> (corrArea.getX()), static_cast<int> (corrArea.getY()), static_cast<int> (corrArea.getWidth()), static_cast<int> (corrArea.getHeight()), juce::Justification::centred, false);
+    g.setColour (Colours::faint);
+    g.fillRect (mid - 0.5f, track.getY() - 2.0f, 1.0f, track.getHeight() + 4.0f);
 }
 
 //==============================================================================
@@ -835,7 +997,32 @@ void VectorscopeComponent::paint (juce::Graphics& g)
 VerticalLufsMeterComponent::VerticalLufsMeterComponent (JustifiedLevelControlAudioProcessor& p)
     : processor (p)
 {
-    setMouseCursor (juce::MouseCursor::PointingHandCursor);
+}
+
+void VerticalLufsMeterComponent::resized()
+{
+    auto content = getLocalBounds().reduced (16);
+    headingArea = content.removeFromTop (22);
+    content.removeFromTop (12);
+
+    readoutArea = content.removeFromTop (54 * 2 + 10);
+    auto rows = readoutArea;
+    for (int r = 0; r < 2; ++r)
+    {
+        auto row = rows.removeFromTop (54);
+        rows.removeFromTop (10);
+        int cellW = (row.getWidth() - 10) / 2;
+        readoutCells[static_cast<size_t> (r * 2)]     = row.removeFromLeft (cellW);
+        row.removeFromLeft (10);
+        readoutCells[static_cast<size_t> (r * 2 + 1)] = row;
+    }
+
+    content.removeFromTop (18);
+    channelLabelArea = content.removeFromBottom (16);
+    content.removeFromBottom (6);
+    tickArea = content.removeFromLeft (34);
+    content.removeFromLeft (6);
+    meterBarArea = content.toFloat().reduced (0.0f, 6.0f);
 }
 
 float VerticalLufsMeterComponent::getNormYFromDb (float db)
@@ -872,16 +1059,24 @@ float VerticalLufsMeterComponent::getDbFromNormY (float normY)
         return juce::jmap (normY, 0.78f, 1.00f, 0.0f, 6.0f);
 }
 
+void VerticalLufsMeterComponent::mouseMove (const juce::MouseEvent& event)
+{
+    bool overReadouts = readoutArea.contains (event.getPosition());
+    setMouseCursor (overReadouts || event.position.y > static_cast<float> (readoutArea.getBottom())
+                        ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor);
+    setTooltip (overReadouts ? "Click to reset peak hold"
+                             : (event.position.y > static_cast<float> (readoutArea.getBottom()) ? "Click or drag to set the target level" : juce::String()));
+}
+
 void VerticalLufsMeterComponent::mouseDown (const juce::MouseEvent& event)
 {
-    if (event.position.y < 100.0f)
+    if (readoutArea.contains (event.getPosition()))
     {
-        // Clicked top peak header card: reset peak hold
+        // Clicked the readout block: reset peak hold
         processor.resetPeakHold();
         currentPeakValL = -100.0f;
         currentPeakValR = -100.0f;
         highestPeakVal = -100.0f;
-        truePeakDb = -100.0f;
         repaint();
     }
     else
@@ -892,26 +1087,17 @@ void VerticalLufsMeterComponent::mouseDown (const juce::MouseEvent& event)
 
 void VerticalLufsMeterComponent::mouseDrag (const juce::MouseEvent& event)
 {
-    if (event.position.y >= 90.0f)
-    {
-        auto bounds = getLocalBounds().toFloat();
-        bounds.removeFromTop (100.0f);
-        auto meterSection = bounds.reduced (6.0f, 8.0f);
-        meterSection.removeFromLeft (30.0f);
-        auto meterBarArea = meterSection.reduced (4.0f, 0.0f);
+    if (event.mouseDownPosition.y <= static_cast<float> (readoutArea.getBottom()) || meterBarArea.isEmpty())
+        return;
 
-        float normY = (meterBarArea.getBottom() - event.position.y) / meterBarArea.getHeight();
-        float targetDb = getDbFromNormY (normY);
-        targetDb = juce::jlimit (-60.0f, 0.0f, targetDb);
+    float normY = (meterBarArea.getBottom() - event.position.y) / meterBarArea.getHeight();
+    float targetDb = juce::jlimit (-60.0f, 0.0f, getDbFromNormY (normY));
 
-        if (auto* param = processor.apvts.getParameter (ParamIDs::goalLevel.getParamID()))
-        {
-            float normVal = juce::jmap (targetDb, -60.0f, 0.0f, 0.0f, 1.0f);
-            param->setValueNotifyingHost (normVal);
-        }
-        goalDb = targetDb;
-        repaint();
-    }
+    if (auto* param = processor.apvts.getParameter (ParamIDs::goalLevel.getParamID()))
+        param->setValueNotifyingHost (param->convertTo0to1 (targetDb));
+
+    goalDb = targetDb;
+    repaint();
 }
 
 void VerticalLufsMeterComponent::setLufsMetrics (float shortTermLufs, float integLufs, float currentPeakL, float currentPeakR, float highestPeak, float goalTargetDb)
@@ -921,14 +1107,13 @@ void VerticalLufsMeterComponent::setLufsMetrics (float shortTermLufs, float inte
     currentPeakValL = currentPeakL;
     currentPeakValR = currentPeakR;
     highestPeakVal = highestPeak;
-    truePeakDb = highestPeak;
     goalDb = goalTargetDb;
 
     uint32_t now = juce::Time::getMillisecondCounter();
     if (now - lastLufsTextUpdateMs >= 1000 || lastLufsTextUpdateMs == 0)
     {
         lastLufsTextUpdateMs = now;
-        cachedCurrentLufsText = (currentLufs <= -99.0f) ? "-INF" : juce::String (currentLufs, 1);
+        cachedCurrentLufsText = formatDb (currentLufs);
     }
 
     repaint();
@@ -936,161 +1121,107 @@ void VerticalLufsMeterComponent::setLufsMetrics (float shortTermLufs, float inte
 
 void VerticalLufsMeterComponent::paint (juce::Graphics& g)
 {
-    auto bounds = getLocalBounds().toFloat();
+    using namespace Neu;
 
-    // Liquid Glass Background
-    g.setColour (isDark ? juce::Colour (0xffffffff).withAlpha (0.04f) : juce::Colour (0xff000000).withAlpha (0.03f));
-    g.fillRoundedRectangle (bounds, 12.0f);
-    g.setColour (isDark ? juce::Colour (0xffffffff).withAlpha (0.15f) : juce::Colour (0xff000000).withAlpha (0.15f));
-    g.drawRoundedRectangle (bounds, 12.0f, 0.75f);
+    sectionHeading (g, "Loudness", headingArea);
 
-    // Digital Header Readout Card (Dual Peak Readout: CURRENT vs HIGHEST)
-    // Glassy Digital Header Readout Card
-    auto metricsArea = bounds.removeFromTop (100.0f).reduced (6.0f, 6.0f);
-    g.setColour (isDark ? juce::Colour (0xffffffff).withAlpha (0.02f) : juce::Colour (0xff000000).withAlpha (0.02f));
-    g.fillRoundedRectangle (metricsArea, 8.0f);
-    g.setColour (isDark ? juce::Colour (0xffffffff).withAlpha (0.08f) : juce::Colour (0xff000000).withAlpha (0.08f));
-    g.drawRoundedRectangle (metricsArea, 8.0f, 0.75f);
-
-    // Row 1: Dual Peak Readout (CURRENT PK vs HIGHEST PK)
-    auto peakRow = metricsArea.removeFromTop (44.0f);
-    auto leftPeakArea = peakRow.removeFromLeft (peakRow.getWidth() * 0.5f);
-    auto rightPeakArea = peakRow;
-
-    // Current Peak (300ms transient decay, max of L/R)
+    // Readouts: four carved cells
     float maxCurrentPeak = std::max (currentPeakValL, currentPeakValR);
-    g.setFont (juce::FontOptions (13.5f, juce::Font::bold));
-    g.setColour (isDark ? juce::Colour (0xff94a3b8) : juce::Colour (0xff64748b));
-    g.drawText ("CURRENT", static_cast<int> (leftPeakArea.getX()), static_cast<int> (leftPeakArea.getY()) + 3, static_cast<int> (leftPeakArea.getWidth()), 11, juce::Justification::centred, false);
-    
-    g.setFont (juce::FontOptions (15.5f, juce::Font::bold));
-    g.setColour (maxCurrentPeak > 0.0f ? juce::Colour (0xffff3355) : juce::Colour (0xff65cbe5));
-    g.drawText (maxCurrentPeak <= -99.0f ? "-INF" : juce::String (maxCurrentPeak, 1), static_cast<int> (leftPeakArea.getX()), static_cast<int> (leftPeakArea.getY()) + 17, static_cast<int> (leftPeakArea.getWidth()), 16, juce::Justification::centred, false);
-
-    // True Peak (4x oversampled inter-sample peak, indefinite hold)
-    g.setFont (juce::FontOptions (13.5f, juce::Font::bold));
-    g.setColour (isDark ? juce::Colour (0xff94a3b8) : juce::Colour (0xff64748b));
-    g.drawText ("TRUE PEAK", static_cast<int> (rightPeakArea.getX()), static_cast<int> (rightPeakArea.getY()) + 3, static_cast<int> (rightPeakArea.getWidth()), 11, juce::Justification::centred, false);
-    
-    g.setFont (juce::FontOptions (15.5f, juce::Font::bold));
-    g.setColour (highestPeakVal > 0.0f ? juce::Colour (0xffff3355) : (isDark ? juce::Colours::white : juce::Colour (0xff0f172a)));
-    g.drawText (highestPeakVal <= -99.0f ? "-INF" : juce::String (highestPeakVal, 1), static_cast<int> (rightPeakArea.getX()), static_cast<int> (rightPeakArea.getY()) + 17, static_cast<int> (rightPeakArea.getWidth()), 16, juce::Justification::centred, false);
-
-    // Separator line under peak row
-    g.setColour (isDark ? juce::Colours::white.withAlpha(0.08f) : juce::Colours::black.withAlpha(0.08f));
-    g.drawHorizontalLine (juce::roundToInt (metricsArea.getY()), metricsArea.getX() + 4.0f, metricsArea.getRight() - 4.0f);
-
-    // Row 2: SHORT LUFS vs INTEG LUFS
-    auto lufsRow = metricsArea;
-    auto leftLufsArea = lufsRow.removeFromLeft (lufsRow.getWidth() * 0.5f);
-    auto rightLufsArea = lufsRow;
-
-    // Short LUFS
-    g.setFont (juce::FontOptions (13.5f, juce::Font::bold));
-    g.setColour (isDark ? juce::Colour (0xff94a3b8) : juce::Colour (0xff64748b));
-    g.drawText ("SHORT LUFS", static_cast<int> (leftLufsArea.getX()), static_cast<int> (leftLufsArea.getY()) + 4, static_cast<int> (leftLufsArea.getWidth()), 11, juce::Justification::centred, false);
-    
     bool isExceedingGoal = (currentLufs > goalDb || maxCurrentPeak > goalDb);
-    g.setFont (juce::FontOptions (15.5f, juce::Font::bold));
-    g.setColour (isExceedingGoal ? juce::Colour (0xffff3355) : juce::Colour (0xff65cbe5));
-    g.drawText (cachedCurrentLufsText, static_cast<int> (leftLufsArea.getX()), static_cast<int> (leftLufsArea.getY()) + 18, static_cast<int> (leftLufsArea.getWidth()), 16, juce::Justification::centred, false);
 
-    // Integrated LUFS
-    g.setFont (juce::FontOptions (13.5f, juce::Font::bold));
-    g.setColour (isDark ? juce::Colour (0xff94a3b8) : juce::Colour (0xff64748b));
-    g.drawText ("INTEG LUFS", static_cast<int> (rightLufsArea.getX()), static_cast<int> (rightLufsArea.getY()) + 4, static_cast<int> (rightLufsArea.getWidth()), 11, juce::Justification::centred, false);
-    
-    g.setFont (juce::FontOptions (15.5f, juce::Font::bold));
-    g.setColour (isDark ? juce::Colours::white : juce::Colour (0xff0f172a));
-    g.drawText (integratedLufs <= -99.0f ? "-INF" : juce::String (integratedLufs, 1), static_cast<int> (rightLufsArea.getX()), static_cast<int> (rightLufsArea.getY()) + 18, static_cast<int> (rightLufsArea.getWidth()), 16, juce::Justification::centred, false);
+    struct Readout { const char* label; juce::String value; juce::Colour colour; };
+    const Readout readouts[4] = {
+        { "Current",    formatDb (maxCurrentPeak), maxCurrentPeak > 0.0f ? Colours::danger : Colours::accent },
+        { "True peak",  formatDb (highestPeakVal), highestPeakVal > 0.0f ? Colours::danger : Colours::text },
+        { "Short LUFS", cachedCurrentLufsText,     isExceedingGoal ? Colours::danger : Colours::accent },
+        { "Integ LUFS", formatDb (integratedLufs), Colours::text }
+    };
 
-    // --- METER SECTION WITH LOGIC-STYLE NON-LINEAR VU SCALE ---
-    auto meterSection = bounds.reduced (6.0f, 8.0f);
-    auto tickArea = meterSection.removeFromLeft (30.0f);
-    auto meterBarArea = meterSection.reduced (4.0f, 0.0f);
-
-    // Draw Logic Pro X Style Non-Linear Numerical Scale Ticks
-    const float tickDbs[] = { 6.0f, 0.0f, -5.0f, -10.0f, -18.0f, -30.0f, -50.0f };
-    g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
-
-    for (float tickDb : tickDbs)
+    for (size_t i = 0; i < 4; ++i)
     {
-        float normY = getNormYFromDb (tickDb);
-        float tickY = meterBarArea.getBottom() - normY * meterBarArea.getHeight();
-
-        // Tick mark line
-        g.setColour (isDark ? juce::Colour (0xff334155) : juce::Colour (0xffcbd5e1));
-        g.drawHorizontalLine (juce::roundToInt (tickY), tickArea.getRight() - 4.0f, tickArea.getRight());
-
-        // Numerical Label
-        juce::String labelStr = (tickDb > 0.0f) ? ("+" + juce::String (static_cast<int> (tickDb))) : juce::String (static_cast<int> (tickDb));
-        g.setColour ((tickDb == 0.0f || tickDb == 6.0f) ? (isDark ? juce::Colours::white : juce::Colour (0xff0f172a)) : (isDark ? juce::Colour (0xff94a3b8) : juce::Colour (0xff64748b)));
-        g.drawText (labelStr, static_cast<int> (tickArea.getX()), static_cast<int> (tickY - 6.0f), static_cast<int> (tickArea.getWidth() - 6.0f), 12, juce::Justification::right, false);
+        auto cell = readoutCells[i];
+        inset (g, cell.toFloat(), 10.0f, Colours::bg);
+        auto inner = cell.reduced (10, 7);
+        caption (g, readouts[i].label, inner.removeFromTop (14), Colours::faint);
+        g.setFont (mono (21.0f, true));
+        g.setColour (readouts[i].colour);
+        g.drawText (readouts[i].value, inner, juce::Justification::centredLeft, false);
     }
 
-    // Stereo Split Volume Bars: Left (0) and Right (1) side-by-side with 2px gap
-    float gap = 2.0f;
+    // Non-linear tick scale
+    const float tickDbs[] = { 6.0f, 0.0f, -5.0f, -10.0f, -18.0f, -30.0f, -50.0f };
+    g.setFont (mono (12.5f, true));
+    for (float tickDb : tickDbs)
+    {
+        float tickY = meterBarArea.getBottom() - getNormYFromDb (tickDb) * meterBarArea.getHeight();
+        g.setColour (Colours::divider);
+        g.fillRect (static_cast<float> (tickArea.getRight()) - 5.0f, tickY - 0.5f, 5.0f, 1.0f);
+
+        juce::String labelStr = (tickDb > 0.0f) ? ("+" + juce::String (static_cast<int> (tickDb))) : juce::String (static_cast<int> (tickDb));
+        g.setColour ((tickDb == 0.0f || tickDb == 6.0f) ? Colours::text : Colours::muted);
+        g.drawText (labelStr, tickArea.getX(), static_cast<int> (tickY - 7.0f), tickArea.getWidth() - 9, 14, juce::Justification::right, false);
+    }
+
+    // Stereo split bars: carved tracks
+    float gap = 10.0f;
     float barWidth = (meterBarArea.getWidth() - gap) * 0.5f;
     auto leftBarArea  = meterBarArea.withWidth (barWidth);
     auto rightBarArea = meterBarArea.withWidth (barWidth).withX (leftBarArea.getRight() + gap);
 
-    // Track Backgrounds
-    g.setColour (isDark ? juce::Colour (0xff161f30) : juce::Colour (0xfff1f5f9));
-    g.fillRoundedRectangle (leftBarArea, 3.0f);
-    g.fillRoundedRectangle (rightBarArea, 3.0f);
-    g.setColour (isDark ? juce::Colour (0xff26344d) : juce::Colour (0xffcbd5e1));
-    g.drawRoundedRectangle (leftBarArea, 3.0f, 1.0f);
-    g.drawRoundedRectangle (rightBarArea, 3.0f, 1.0f);
-
-    // Left Channel Fill (Full-Spectrum Peak Energy on L channel)
-    float meterDbL  = std::max (currentPeakValL, currentLufs);
-    float normFillL = getNormYFromDb (meterDbL);
-    float fillH_L   = normFillL * leftBarArea.getHeight();
-    auto fillRectL  = leftBarArea.withHeight (fillH_L).withY (leftBarArea.getBottom() - fillH_L);
-
-    bool isOverGoalL = (meterDbL > goalDb);
-    juce::ColourGradient cyanGradL (
-        isOverGoalL ? juce::Colour (0xffff3355) : juce::Colour (0xff65cbe5), 0.0f, fillRectL.getBottom(),
-        isOverGoalL ? juce::Colour (0xffff6677) : juce::Colour (0xff1d4ed8), 0.0f, fillRectL.getY(), false
-    );
-    g.setGradientFill (cyanGradL);
-    g.fillRoundedRectangle (fillRectL, 3.0f);
-
-    // Right Channel Fill (Full-Spectrum Peak Energy on R channel)
-    float meterDbR  = std::max (currentPeakValR, currentLufs);
-    float normFillR = getNormYFromDb (meterDbR);
-    float fillH_R   = normFillR * rightBarArea.getHeight();
-    auto fillRectR  = rightBarArea.withHeight (fillH_R).withY (rightBarArea.getBottom() - fillH_R);
-
-    bool isOverGoalR = (meterDbR > goalDb);
-    juce::ColourGradient cyanGradR (
-        isOverGoalR ? juce::Colour (0xffff3355) : juce::Colour (0xff65cbe5), 0.0f, fillRectR.getBottom(),
-        isOverGoalR ? juce::Colour (0xffff6677) : juce::Colour (0xff1d4ed8), 0.0f, fillRectR.getY(), false
-    );
-    g.setGradientFill (cyanGradR);
-    g.fillRoundedRectangle (fillRectR, 3.0f);
-
-    // Fine horizontal segment tick marks across both bars
-    g.setColour (juce::Colour (0x440b0e17));
-    for (float tickY = meterBarArea.getY(); tickY < meterBarArea.getBottom(); tickY += 4.0f)
+    auto drawBar = [&] (juce::Rectangle<float> track, float peakDb)
     {
-        g.drawHorizontalLine (juce::roundToInt (tickY), meterBarArea.getX(), meterBarArea.getRight());
+        inset (g, track, 9.0f, Colours::well);
+
+        float meterDb = std::max (peakDb, currentLufs);
+        float fillH = getNormYFromDb (meterDb) * (track.getHeight() - 8.0f);
+        if (meterDb <= -60.0f || fillH < 1.0f)
+            return;
+
+        auto fillRect = track.reduced (4.0f).withTop (track.getBottom() - 4.0f - fillH);
+        bool over = meterDb > goalDb;
+
+        juce::ColourGradient grad (over ? Colours::danger.darker (0.4f) : Colours::accentDim, 0.0f, track.getBottom(),
+                                   over ? Colours::danger : Colours::accent, 0.0f, fillRect.getY(), false);
+        g.setGradientFill (grad);
+        g.fillRoundedRectangle (fillRect, 5.0f);
+
+        // LED segments
+        g.setColour (Colours::well.withAlpha (0.55f));
+        for (float y = fillRect.getBottom() - 4.0f; y > fillRect.getY(); y -= 4.0f)
+            g.fillRect (fillRect.getX(), y, fillRect.getWidth(), 1.0f);
+    };
+
+    drawBar (leftBarArea, currentPeakValL);
+    drawBar (rightBarArea, currentPeakValR);
+
+    // Highest peak marker
+    if (highestPeakVal > -60.0f)
+    {
+        float peakY = meterBarArea.getBottom() - 4.0f - getNormYFromDb (highestPeakVal) * (meterBarArea.getHeight() - 8.0f);
+        g.setColour (highestPeakVal > goalDb ? Colours::danger : Colours::text);
+        g.fillRect (meterBarArea.getX() + 4.0f, peakY - 1.0f, meterBarArea.getWidth() - 8.0f, 2.0f);
     }
 
-    // Synchronized Target Goal Line on VU Meter across both bars (hidden by the HIDE button)
+    // Goal line across both bars (hidden by HIDE)
     if (showGoal)
     {
-        float goalNormY = getNormYFromDb (goalDb);
-        float goalY = meterBarArea.getBottom() - goalNormY * meterBarArea.getHeight();
-        g.setColour (juce::Colour (0xff00ffff));
-        g.drawHorizontalLine (juce::roundToInt (goalY), meterBarArea.getX() - 2.0f, meterBarArea.getRight() + 2.0f);
+        float goalY = meterBarArea.getBottom() - 4.0f - getNormYFromDb (goalDb) * (meterBarArea.getHeight() - 8.0f);
+        juce::Path goal;
+        goal.addRectangle (meterBarArea.getX() - 4.0f, goalY - 1.0f, meterBarArea.getWidth() + 8.0f, 2.0f);
+        glow (g, goal, Colours::accentGlow, 4);
+        g.setColour (Colours::text);
+        g.fillPath (goal);
+
+        juce::Path arrow;
+        arrow.addTriangle (meterBarArea.getX() - 9.0f, goalY - 5.0f, meterBarArea.getX() - 9.0f, goalY + 5.0f, meterBarArea.getX() - 3.0f, goalY);
+        g.setColour (Colours::accent);
+        g.fillPath (arrow);
     }
 
-    // Highest Peak Indicator Line across both bars
-    float peakNorm = getNormYFromDb (highestPeakVal);
-    float peakY = meterBarArea.getBottom() - peakNorm * meterBarArea.getHeight();
-    g.setColour (highestPeakVal > goalDb ? juce::Colour (0xffff6677) : juce::Colours::white);
-    g.drawHorizontalLine (juce::roundToInt (peakY), meterBarArea.getX(), meterBarArea.getRight());
+    g.setFont (mono (12.0f, true));
+    g.setColour (Colours::faint);
+    g.drawText ("L", leftBarArea.toNearestInt().withY (channelLabelArea.getY()).withHeight (channelLabelArea.getHeight()), juce::Justification::centred, false);
+    g.drawText ("R", rightBarArea.toNearestInt().withY (channelLabelArea.getY()).withHeight (channelLabelArea.getHeight()), juce::Justification::centred, false);
 }
 
 //==============================================================================
@@ -1101,40 +1232,41 @@ ReferenceBarComponent::ReferenceBarComponent (JustifiedLevelControlAudioProcesso
 {
     for (int i = 0; i < 4; ++i)
     {
-        slotButtons[i].setButtonText (juce::String (i + 1));
-        slotButtons[i].setClickingTogglesState (true);
-        slotButtons[i].setRadioGroupId (101);
-        slotButtons[i].setTooltip ("Select Reference Slot " + juce::String (i + 1));
-        slotButtons[i].onClick = [this, i]() {
+        auto& b = slotButtons[i];
+        Neu::setStyle (b, "chip");
+        b.getProperties().set ("chipLabel", "SLOT");
+        b.setButtonText (juce::String (i + 1));
+        b.setClickingTogglesState (true);
+        b.setRadioGroupId (101);
+        b.setTooltip ("Select reference slot " + juce::String (i + 1));
+        b.onClick = [this, i]() {
+            if (! slotButtons[i].getToggleState())
+                return;
             if (auto* param = processor.apvts.getParameter (ParamIDs::refSlot.getParamID()))
-            {
-                float normVal = juce::jmap (static_cast<float> (i + 1), 1.0f, 4.0f, 0.0f, 1.0f);
-                param->setValueNotifyingHost (normVal);
-            }
+                param->setValueNotifyingHost (param->convertTo0to1 (static_cast<float> (i + 1)));
             repaint();
         };
-        addAndMakeVisible (slotButtons[i]);
+        addAndMakeVisible (b);
     }
     slotButtons[0].setToggleState (true, juce::dontSendNotification);
 
-    loadRefButton.setTooltip ("Load Reference Audio File into the selected slot (WAV, AIFF, MP3, FLAC)");
+    Neu::setStyle (loadRefButton, "primary");
+    loadRefButton.setTooltip ("Load a reference audio file into the selected slot (WAV, AIFF, MP3, FLAC)");
     loadRefButton.onClick = [this]() {
-        int selectedSlot = 0;
-        for (int i = 0; i < 4; ++i)
-            if (slotButtons[i].getToggleState())
-                selectedSlot = i;
+        int selectedSlot = getSelectedSlot();
 
         fileChooser = std::make_unique<juce::FileChooser> (
             "Select Reference Audio Track...", juce::File::getSpecialLocation (juce::File::userMusicDirectory),
             "*.wav;*.aiff;*.mp3;*.flac;*.m4a"
         );
 
-        auto folderChooserFlags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles;
-        fileChooser->launchAsync (folderChooserFlags, [this, selectedSlot] (const juce::FileChooser& chooser) {
+        auto chooserFlags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles;
+        fileChooser->launchAsync (chooserFlags, [this, selectedSlot] (const juce::FileChooser& chooser) {
             auto result = chooser.getResult();
-            if (result.exists())
+            if (result.existsAsFile())
             {
                 processor.loadReferenceFile (result, selectedSlot);
+                refreshFromProcessor();
                 repaint();
             }
         });
@@ -1147,188 +1279,398 @@ ReferenceBarComponent::ReferenceBarComponent (JustifiedLevelControlAudioProcesso
             param->setValueNotifyingHost (abToggleButton.getToggleState() ? 1.0f : 0.0f);
     };
     addAndMakeVisible (abToggleButton);
+
+    refreshFromProcessor();
+}
+
+int ReferenceBarComponent::getSelectedSlot() const
+{
+    for (int i = 0; i < 4; ++i)
+        if (slotButtons[i].getToggleState())
+            return i;
+    return 0;
+}
+
+void ReferenceBarComponent::refreshFromProcessor()
+{
+    if (auto* p = processor.apvts.getRawParameterValue (ParamIDs::refSlot.getParamID()))
+    {
+        int slot = juce::jlimit (0, 3, static_cast<int> (p->load()) - 1);
+        if (! slotButtons[slot].getToggleState())
+        {
+            slotButtons[slot].setToggleState (true, juce::dontSendNotification);
+            repaint();
+        }
+    }
+
+    if (auto* p = processor.apvts.getRawParameterValue (ParamIDs::abToggle.getParamID()))
+        abToggleButton.setToggleState (p->load() > 0.5f, juce::dontSendNotification);
+
+    for (int i = 0; i < 4; ++i)
+    {
+        bool loaded = processor.hasReference (i);
+        auto& props = slotButtons[i].getProperties();
+        if (static_cast<bool> (props["loaded"]) != loaded)
+        {
+            props.set ("loaded", loaded);
+            slotButtons[i].repaint();
+            repaint (readoutArea);
+        }
+    }
 }
 
 void ReferenceBarComponent::paint (juce::Graphics& g)
 {
-    auto bounds = getLocalBounds().toFloat();
-    // Liquid Glass Background
-    g.setColour (isDark ? juce::Colour (0xffffffff).withAlpha (0.04f) : juce::Colour (0xff000000).withAlpha (0.03f));
-    g.fillRoundedRectangle (bounds, 12.0f);
-    g.setColour (isDark ? juce::Colour (0xffffffff).withAlpha (0.15f) : juce::Colour (0xff000000).withAlpha (0.15f));
-    g.drawRoundedRectangle (bounds, 12.0f, 0.75f);
+    using namespace Neu;
 
-    // Selected-slot readout - fills what was previously dead space on the right
-    // of the bar with the info those controls imply but never showed.
+    sectionHeading (g, "Reference", headingArea);
+
     if (readoutArea.isEmpty())
         return;
 
-    int selectedSlot = 0;
-    for (int i = 0; i < 4; ++i)
-        if (slotButtons[i].getToggleState())
-            selectedSlot = i;
+    int selectedSlot = getSelectedSlot();
+    auto well = readoutArea.toFloat();
+    inset (g, well, 10.0f, Colours::bg);
 
-    g.setColour (isDark ? juce::Colours::white.withAlpha (0.10f) : juce::Colours::black.withAlpha (0.10f));
-    g.drawVerticalLine (readoutArea.getX() - 10, static_cast<float> (getHeight()) * 0.18f, static_cast<float> (getHeight()) * 0.82f);
-
+    auto area = readoutArea.reduced (14, 6);
     auto metrics = processor.getRefMetrics (selectedSlot);
-    auto area = readoutArea.reduced (2, 4);
 
     if (metrics.loaded)
     {
-        auto nameArea = area.removeFromTop (area.getHeight() / 2);
-        g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
-        g.setColour (isDark ? juce::Colours::white : juce::Colour (0xff0f172a));
-        g.drawText ("REF " + juce::String (selectedSlot + 1) + ":  " + metrics.fileName, nameArea, juce::Justification::centredLeft, true);
+        auto nameRow = area.removeFromTop (area.getHeight() / 2);
+        g.setFont (mono (13.0f, true));
+        g.setColour (Colours::text);
+        g.drawText ("REF " + juce::String (selectedSlot + 1) + "  " + metrics.fileName, nameRow, juce::Justification::centredLeft, true);
 
-        juce::String statsStr = juce::String (metrics.integratedLufs, 1) + " LUFS   ·   TP " + juce::String (metrics.truePeakDb, 1) + " dB";
-        g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
-        g.setColour (juce::Colour (0xfff97316)); // BluPrint Copper Orange - matches the reference curve elsewhere
-        g.drawText (statsStr, area, juce::Justification::centredLeft, true);
+        g.setFont (mono (13.0f, true));
+        g.setColour (Colours::amber);
+        g.drawText (juce::String (metrics.integratedLufs, 1) + " LUFS   TP " + juce::String (metrics.truePeakDb, 1) + " dB",
+                    area, juce::Justification::centredLeft, true);
     }
     else
     {
-        g.setFont (juce::FontOptions (13.5f, juce::Font::bold));
-        g.setColour (isDark ? juce::Colour (0xff94a3b8) : juce::Colour (0xff64748b));
-        g.drawText ("SLOT " + juce::String (selectedSlot + 1) + " EMPTY — LOAD A REFERENCE TRACK", readoutArea, juce::Justification::centredLeft, true);
-    }
-}
-
-void ReferenceBarComponent::paintOverChildren (juce::Graphics& g)
-{
-    // Small loaded/empty dot on each slot button (copper = loaded, dim = empty)
-    for (int i = 0; i < 4; ++i)
-    {
-        auto b = slotButtons[i].getBounds();
-        bool loaded = processor.hasReference (i);
-        g.setColour (loaded ? juce::Colour (0xfff97316) : (isDark ? juce::Colour (0xff334155) : juce::Colour (0xffcbd5e1)));
-        float d = 5.0f;
-        g.fillEllipse (static_cast<float> (b.getRight()) - d - 1.0f, static_cast<float> (b.getBottom()) - d - 1.0f, d, d);
+        caption (g, "Slot " + juce::String (selectedSlot + 1) + " empty", area.removeFromTop (area.getHeight() / 2), Colours::muted);
+        g.setFont (mono (12.5f));
+        g.setColour (Colours::faint);
+        g.drawText ("Load a track to compare", area, juce::Justification::centredLeft, true);
     }
 }
 
 void ReferenceBarComponent::resized()
 {
-    auto bounds = getLocalBounds().reduced (8, 5);
+    auto content = getLocalBounds().reduced (16, 0);
+    auto row = content.withSizeKeepingCentre (content.getWidth(), 36);
 
-    // Reserve a gutter on the right for the parent editor's overlay
-    // (logo, version text, zoom button - see paintOverChildren()).
-    bounds.removeFromRight (390);
+    headingArea = row.removeFromLeft (120);
+    row.removeFromLeft (8);
 
-    int buttonWidth = 36;
     for (int i = 0; i < 4; ++i)
     {
-        slotButtons[i].setBounds (bounds.removeFromLeft (buttonWidth).reduced (2, 2));
+        slotButtons[i].setBounds (row.removeFromLeft (104).expanded (Neu::buttonPad));
+        row.removeFromLeft (10);
     }
 
-    bounds.removeFromLeft (10);
-    loadRefButton.setBounds (bounds.removeFromLeft (110).reduced (2, 2));
+    row.removeFromLeft (10);
+    loadRefButton.setBounds (row.removeFromLeft (124).expanded (Neu::buttonPad));
+    row.removeFromLeft (16);
+    abToggleButton.setBounds (row.removeFromLeft (128).expanded (Neu::buttonPad));
+    row.removeFromLeft (16);
 
-    bounds.removeFromLeft (20);
-    abToggleButton.setBounds (bounds.removeFromLeft (130).reduced (2, 2));
-
-    bounds.removeFromLeft (18);
-    readoutArea = bounds.reduced (0, 2);
+    readoutArea = getLocalBounds().reduced (0, 10).withLeft (row.getX()).withRight (row.getRight());
 }
 
 //==============================================================================
-// JustifiedLevelControlAudioProcessorEditor Implementation (Justified Level Control)
+// ZoomToggleButton
 //==============================================================================
-JustifiedLevelControlAudioProcessorEditor::JustifiedLevelControlAudioProcessorEditor (JustifiedLevelControlAudioProcessor& p)
-    : AudioProcessorEditor (&p), audioProcessor (p),
-      spectrumView (p), goalLineView (p), lufsMeterView (p), refBarView (p)
+void ZoomToggleButton::paintButton (juce::Graphics& g, bool isMouseOverButton, bool isButtonDown)
+{
+    auto body = getLocalBounds().toFloat().reduced (static_cast<float> (Neu::buttonPad));
+    bool pressed = isButtonDown || getToggleState();
+
+    if (pressed)
+        Neu::inset (g, body, 10.0f, Neu::Colours::surface);
+    else
+        Neu::raised (g, body, 10.0f, Neu::Depth::small);
+
+    juce::Colour iconCol = (pressed || isMouseOverButton) ? Neu::Colours::accent : Neu::Colours::text;
+
+    auto iconBounds = body.reduced (body.getWidth() * 0.27f);
+    float lensD = iconBounds.getWidth() * 0.7f;
+    juce::Rectangle<float> lensRect (iconBounds.getX(), iconBounds.getY(), lensD, lensD);
+
+    g.setColour (iconCol);
+    g.drawEllipse (lensRect, 2.0f);
+
+    juce::Point<float> handleStart (lensRect.getRight() - lensD * 0.12f, lensRect.getBottom() - lensD * 0.12f);
+    g.drawLine (juce::Line<float> (handleStart, handleStart.translated (lensD * 0.45f, lensD * 0.45f)), 2.4f);
+
+    // +/- glyph shows which way the next click zooms
+    float glyphHalf = lensD * 0.2f;
+    auto c = lensRect.getCentre();
+    g.drawLine (c.x - glyphHalf, c.y, c.x + glyphHalf, c.y, 1.8f);
+    if (getToggleState())
+        g.drawLine (c.x, c.y - glyphHalf, c.x, c.y + glyphHalf, 1.8f);
+}
+
+//==============================================================================
+// NeuLookAndFeel
+//==============================================================================
+NeuLookAndFeel::NeuLookAndFeel()
+{
+    using namespace Neu;
+    setColour (juce::ResizableWindow::backgroundColourId, Colours::bg);
+    setColour (juce::TextButton::buttonColourId, Colours::surface);
+    setColour (juce::TextButton::textColourOffId, Colours::text);
+    setColour (juce::TextButton::textColourOnId, Colours::accent);
+    setColour (juce::Label::textColourId, Colours::text);
+    setColour (juce::Label::backgroundColourId, juce::Colours::transparentBlack);
+    setColour (juce::Label::outlineColourId, juce::Colours::transparentBlack);
+    setColour (juce::Label::textWhenEditingColourId, Colours::text);
+    setColour (juce::TextEditor::textColourId, Colours::text);
+    setColour (juce::TextEditor::backgroundColourId, juce::Colours::transparentBlack); // carved body is drawn behind it
+    setColour (juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
+    setColour (juce::TextEditor::focusedOutlineColourId, Colours::accentDim);
+    setColour (juce::TextEditor::highlightColourId, Colours::accentGlow);
+    setColour (juce::TextEditor::highlightedTextColourId, Colours::text);
+    setColour (juce::CaretComponent::caretColourId, Colours::accent);
+    setColour (juce::TooltipWindow::backgroundColourId, Colours::highlight);
+    setColour (juce::TooltipWindow::textColourId, Colours::text);
+}
+
+void NeuLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& button, const juce::Colour&,
+                                           bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown)
+{
+    using namespace Neu;
+    auto style = button.getProperties()["neuStyle"].toString();
+    auto body = button.getLocalBounds().toFloat().reduced (static_cast<float> (buttonPad));
+    float radius = style == "chip" ? body.getHeight() * 0.5f : (style == "seg" ? 8.0f : 11.0f);
+
+    if (style == "primary")
+    {
+        juce::Path shape;
+        shape.addRoundedRectangle (body, radius);
+        glow (g, shape, Colours::accentGlow, shouldDrawButtonAsHighlighted ? 8 : 6);
+
+        auto base = shouldDrawButtonAsDown ? Colours::accentDim
+                  : (shouldDrawButtonAsHighlighted ? Colours::accent.brighter (0.15f) : Colours::accent);
+        // the one place a gradient is allowed: a subtle sheen on primary actions
+        g.setGradientFill (juce::ColourGradient (base.brighter (0.12f), 0.0f, body.getY(),
+                                                 base.darker (0.08f), 0.0f, body.getBottom(), false));
+        g.fillPath (shape);
+        return;
+    }
+
+    bool pressed = button.getToggleState() || shouldDrawButtonAsDown;
+    if (pressed)
+        inset (g, body, radius, Colours::surface);
+    else
+        raised (g, body, radius, Depth::small);
+}
+
+void NeuLookAndFeel::drawButtonText (juce::Graphics& g, juce::TextButton& button,
+                                     bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown)
+{
+    using namespace Neu;
+    auto style = button.getProperties()["neuStyle"].toString();
+    auto body = button.getLocalBounds().reduced (buttonPad);
+    bool pressed = button.getToggleState() || shouldDrawButtonAsDown;
+
+    juce::Colour textCol = style == "primary" ? Colours::onAccent
+                         : (pressed || shouldDrawButtonAsHighlighted ? Colours::accent : Colours::text);
+    if (! button.isEnabled())
+        textCol = Colours::faint;
+
+    if (style == "chip")
+    {
+        // [● SLOT  ⌈1⌉] : glowing status dot, label, carved key badge
+        auto inner = body.reduced (12, 0);
+        bool loaded = button.getProperties()["loaded"];
+        auto dotCol = loaded ? Colours::amber : Colours::faint;
+
+        auto dotArea = inner.removeFromLeft (8);
+        juce::Path dot;
+        dot.addEllipse (juce::Rectangle<float> (static_cast<float> (dotArea.getX()), static_cast<float> (dotArea.getCentreY()) - 4.0f, 8.0f, 8.0f));
+        if (loaded)
+            glow (g, dot, Colours::amber.withAlpha (0.6f), 5);
+        g.setColour (dotCol);
+        g.fillPath (dot);
+
+        auto badge = inner.removeFromRight (24).withSizeKeepingCentre (24, 22).toFloat();
+        inset (g, badge, 6.0f, Colours::bg);
+        g.setFont (mono (13.5f, true));
+        g.setColour (Colours::accent);
+        g.drawText (button.getButtonText(), badge, juce::Justification::centred, false);
+
+        inner.removeFromLeft (8);
+        g.setFont (sans (12.5f, Weight::bold, 0.06f));
+        g.setColour (textCol);
+        g.drawText (button.getProperties()["chipLabel"].toString().toUpperCase(), inner, juce::Justification::centredLeft, false);
+        return;
+    }
+
+    g.setFont (style == "seg" ? mono (12.5f, true) : sans (13.0f, Weight::bold, 0.06f));
+    g.setColour (textCol);
+    g.drawText (button.getButtonText().toUpperCase(), body, juce::Justification::centred, false);
+}
+
+void NeuLookAndFeel::drawToggleButton (juce::Graphics& g, juce::ToggleButton& button,
+                                       bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown)
+{
+    using namespace Neu;
+    juce::ignoreUnused (shouldDrawButtonAsDown);
+    auto body = button.getLocalBounds().reduced (buttonPad);
+    bool on = button.getToggleState();
+
+    // Carved switch track with a raised knob
+    auto track = body.removeFromLeft (46).withSizeKeepingCentre (46, 24).toFloat();
+    inset (g, track, 12.0f, Colours::bg);
+
+    auto knob = juce::Rectangle<float> (18.0f, 18.0f)
+                    .withCentre ({ on ? track.getRight() - 12.0f : track.getX() + 12.0f, track.getCentreY() });
+    if (on)
+    {
+        juce::Path k;
+        k.addEllipse (knob);
+        glow (g, k, Colours::accentGlow, 7);
+        g.setColour (Colours::accent);
+        g.fillPath (k);
+    }
+    else
+    {
+        raised (g, knob, 9.0f, Depth::small, Colours::muted.withAlpha (0.55f).overlaidWith (Colours::surface.withAlpha (0.3f)));
+    }
+
+    body.removeFromLeft (12);
+    g.setFont (sans (13.0f, Weight::bold, 0.06f));
+    g.setColour (on || shouldDrawButtonAsHighlighted ? Colours::accent : Colours::text);
+    g.drawText (button.getButtonText().toUpperCase(), body, juce::Justification::centredLeft, false);
+}
+
+juce::Font NeuLookAndFeel::getLabelFont (juce::Label&)
+{
+    return Neu::mono (14.0f, true);
+}
+
+void NeuLookAndFeel::drawLabel (juce::Graphics& g, juce::Label& label)
+{
+    using namespace Neu;
+    auto body = label.getLocalBounds().toFloat().reduced (static_cast<float> (buttonPad));
+    inset (g, body, 11.0f, Colours::bg);
+
+    if (! label.isBeingEdited())
+    {
+        g.setFont (getLabelFont (label));
+        g.setColour (Colours::accent);
+        g.drawText (label.getText(), body, label.getJustificationType(), false);
+    }
+}
+
+void NeuLookAndFeel::fillTextEditorBackground (juce::Graphics& g, int width, int height, juce::TextEditor& editor)
+{
+    juce::ignoreUnused (width, height);
+    // Inside a Label the label already painted the carved body; leave it visible.
+    if (dynamic_cast<juce::Label*> (editor.getParentComponent()) != nullptr)
+        return;
+
+    Neu::inset (g, editor.getLocalBounds().toFloat(), 10.0f, Neu::Colours::bg);
+}
+
+void NeuLookAndFeel::drawTextEditorOutline (juce::Graphics& g, int width, int height, juce::TextEditor& editor)
+{
+    if (! editor.hasKeyboardFocus (true) || editor.isReadOnly())
+        return;
+
+    auto body = juce::Rectangle<float> (0.0f, 0.0f, static_cast<float> (width), static_cast<float> (height));
+    if (dynamic_cast<juce::Label*> (editor.getParentComponent()) != nullptr)
+        body = body.reduced (static_cast<float> (Neu::buttonPad));
+
+    g.setColour (Neu::Colours::accentDim);
+    g.drawRoundedRectangle (body.reduced (0.5f), 11.0f, 1.0f);
+}
+
+juce::Rectangle<int> NeuLookAndFeel::getTooltipBounds (const juce::String& tipText, juce::Point<int> screenPos, juce::Rectangle<int> parentArea)
+{
+    auto font = Neu::mono (13.0f);
+    int w = juce::jmin (420, juce::roundToInt (font.getStringWidthFloat (tipText)) + 28);
+    int h = 30;
+
+    return juce::Rectangle<int> (screenPos.x > parentArea.getCentreX() ? screenPos.x - (w + 12) : screenPos.x + 24,
+                                 screenPos.y > parentArea.getCentreY() ? screenPos.y - (h + 6)  : screenPos.y + 6,
+                                 w, h)
+             .constrainedWithin (parentArea);
+}
+
+void NeuLookAndFeel::drawTooltip (juce::Graphics& g, const juce::String& text, int width, int height)
+{
+    auto bounds = juce::Rectangle<float> (0.0f, 0.0f, static_cast<float> (width), static_cast<float> (height));
+    g.setColour (Neu::Colours::highlight);
+    g.fillRoundedRectangle (bounds, 9.0f);
+
+    g.setFont (Neu::mono (13.0f));
+    g.setColour (Neu::Colours::text);
+    g.drawFittedText (text, bounds.reduced (14.0f, 2.0f).toNearestInt(), juce::Justification::centredLeft, 1);
+}
+
+//==============================================================================
+// DashboardComponent
+//==============================================================================
+DashboardComponent::DashboardComponent (JustifiedLevelControlAudioProcessor& p)
+    : audioProcessor (p),
+      spectrumView (p), lufsMeterView (p), goalLineView (p), refBarView (p)
 {
     tempScopeData.fill (0.0f);
     tempRefData.fill (0.0f);
     tempLeftWave.fill (0.0f);
     tempRightWave.fill (0.0f);
     tempOscData.fill (0.0f);
-    
-    // Load SVG Logo
+
     logoSVG = juce::Drawable::createFromImageData (BinaryData::JLC_svg, BinaryData::JLC_svgSize);
 
-    // Apply BluPrint LookAndFeel to Editor Controls
-    setLookAndFeel (&bluPrintLF);
-
-    // Add All 3 Viewport Components for Simultaneous Main Dashboard Display
     addAndMakeVisible (spectrumView);
     addAndMakeVisible (oscilloscopeView);
     addAndMakeVisible (vectorscopeView);
-
     addAndMakeVisible (lufsMeterView);
     addAndMakeVisible (goalLineView);
     addAndMakeVisible (refBarView);
 
-    // Target Level Selection Buttons
-    auto setTargetDb = [this](float db) {
-        if (auto* param = audioProcessor.apvts.getParameter (ParamIDs::goalLevel.getParamID()))
-        {
-            float normVal = juce::jmap (db, -60.0f, 0.0f, 0.0f, 1.0f);
-            param->setValueNotifyingHost (normVal);
-        }
-        goalLineView.setGoalLevelDb (db);
-    };
-
-    target14Button.setTooltip ("Set target to -14 LUFS (Streaming standard)");
-    target14Button.onClick = [setTargetDb]() { setTargetDb (-14.0f); };
+    // Target presets: they light up (pressed, cyan) when the target matches
+    Neu::setStyle (target14Button, "seg");
+    target14Button.setTooltip ("Set target to -14 LUFS (streaming standard)");
+    target14Button.onClick = [this]() { setTargetDb (-14.0f); };
     addAndMakeVisible (target14Button);
 
-    hideGoalLinesButton.setClickingTogglesState (true);
-    hideGoalLinesButton.setTooltip ("Hide the goal line on the spectrum, oscilloscope, and LUFS meter");
-    hideGoalLinesButton.onClick = [this]() {
-        bool zonesHidden = hideGoalLinesButton.getToggleState();
-        if (auto* param = audioProcessor.apvts.getParameter (ParamIDs::showTargetZones.getParamID()))
-            param->setValueNotifyingHost (zonesHidden ? 0.0f : 1.0f);
-    };
-    addAndMakeVisible (hideGoalLinesButton);
-
-    target0Button.setTooltip ("Set target to 0 LUFS (Max)");
-    target0Button.onClick = [setTargetDb]() { setTargetDb (0.0f); };
+    Neu::setStyle (target0Button, "seg");
+    target0Button.setTooltip ("Set target to 0 LUFS (max)");
+    target0Button.onClick = [this]() { setTargetDb (0.0f); };
     addAndMakeVisible (target0Button);
 
-    targetCustomButton.setTooltip ("Click to set a custom target level");
-    targetCustomButton.onClick = [this, setTargetDb]() {
+    targetCustomButton.setTooltip ("Click to type a custom target level");
+    targetCustomButton.onClick = [this]() {
         targetCustomButton.setVisible (false);
         targetCustomLabel.setVisible (true);
         targetCustomLabel.showEditor();
     };
     addAndMakeVisible (targetCustomButton);
 
-    // Initial Custom Label Setup
     float initialCustomDb = -6.0f;
     if (auto* param = audioProcessor.apvts.getRawParameterValue (ParamIDs::customGoalLevel.getParamID()))
         initialCustomDb = param->load();
     targetCustomLabel.setText (juce::String (initialCustomDb, 1), juce::dontSendNotification);
     targetCustomLabel.setEditable (true, false, false);
     targetCustomLabel.setJustificationType (juce::Justification::centred);
-    targetCustomLabel.setColour (juce::Label::backgroundColourId, juce::Colour (0xff1c3940)); // Dark Teal background
-    targetCustomLabel.setColour (juce::Label::outlineColourId, juce::Colour (0xff65cbe5)); // Bright Cyan outline
-    targetCustomLabel.setColour (juce::Label::textColourId, juce::Colours::white);
-    
-    auto updateCustomButtonText = [this](float db) {
-        if (std::abs(db - (-6.0f)) < 0.01f) // default value
-            targetCustomButton.setButtonText ("Custom");
-        else
-            targetCustomButton.setButtonText (juce::String (db, 1));
-    };
+    targetCustomLabel.setBorderSize (juce::BorderSize<int> (Neu::buttonPad));
 
-    targetCustomLabel.onTextChange = [this, setTargetDb, updateCustomButtonText]() {
+    targetCustomLabel.onTextChange = [this]() {
         juce::String text = targetCustomLabel.getText();
-        if (text.isEmpty() || text.equalsIgnoreCase("Custom"))
-        {
-             text = "-6.0";
-        }
-        
-        float customDb = text.getFloatValue();
-        customDb = juce::jlimit (-60.0f, 12.0f, customDb);
+        if (text.isEmpty() || text.equalsIgnoreCase ("Custom"))
+            text = "-6.0";
+
+        float customDb = juce::jlimit (-60.0f, 12.0f, text.getFloatValue());
         targetCustomLabel.setText (juce::String (customDb, 1), juce::dontSendNotification);
-        
+
         if (auto* param = audioProcessor.apvts.getParameter (ParamIDs::customGoalLevel.getParamID()))
-        {
-            float normVal = juce::jmap (customDb, -60.0f, 12.0f, 0.0f, 1.0f);
-            param->setValueNotifyingHost (normVal);
-        }
-        
+            param->setValueNotifyingHost (param->convertTo0to1 (customDb));
+
         setTargetDb (customDb);
         targetCustomLabel.setVisible (false);
         targetCustomButton.setVisible (true);
@@ -1339,86 +1681,87 @@ JustifiedLevelControlAudioProcessorEditor::JustifiedLevelControlAudioProcessorEd
         targetCustomButton.setVisible (true);
     };
     addChildComponent (targetCustomLabel);
-    
-    // Set initial custom button text
     updateCustomButtonText (initialCustomDb);
 
-    // Dark & Light Mode Theme Switcher Buttons (Removed as per request)
+    hideGoalLinesButton.setClickingTogglesState (true);
+    hideGoalLinesButton.setTooltip ("Hide the target line on the spectrum, oscilloscope and loudness meter");
+    hideGoalLinesButton.onClick = [this]() {
+        bool linesHidden = hideGoalLinesButton.getToggleState();
+        if (auto* param = audioProcessor.apvts.getParameter (ParamIDs::showTargetZones.getParamID()))
+            param->setValueNotifyingHost (linesHidden ? 0.0f : 1.0f);
+    };
+    addAndMakeVisible (hideGoalLinesButton);
 
-    // UI Scale Toggle (50% / 100%, single magnifying-glass icon button)
     zoomButton.setToggleState (false, juce::dontSendNotification); // false = currently at 100%
     zoomButton.setTooltip ("Toggle window size between 100% and 50%");
     zoomButton.onClick = [this]() {
-        int baseW = 1200;
-        int baseH = 820;
-        float scale = zoomButton.getToggleState() ? 0.5f : 1.0f;
-        setSize (juce::roundToInt (baseW * scale), juce::roundToInt (baseH * scale));
+        if (onZoomToggled)
+            onZoomToggled (zoomButton.getToggleState());
     };
     addAndMakeVisible (zoomButton);
 
-    setSize (1200, 820);
-    setResizable (true, true);
-    setResizeLimits (600, 410, 1200, 820);
-
+    setSize (designWidth, designHeight);
     startTimerHz (60);
 }
 
-JustifiedLevelControlAudioProcessorEditor::~JustifiedLevelControlAudioProcessorEditor()
+DashboardComponent::~DashboardComponent()
 {
-    setLookAndFeel (nullptr);
     stopTimer();
 }
 
-void JustifiedLevelControlAudioProcessorEditor::updateTheme (bool dark)
+void DashboardComponent::setTargetDb (float db)
 {
-    isDarkMode = dark;
-    bluPrintLF.updateColours (dark);
-
-    spectrumView.setDarkMode (dark);
-    oscilloscopeView.setDarkMode (dark);
-    vectorscopeView.setDarkMode (dark);
-    lufsMeterView.setDarkMode (dark);
-    goalLineView.setDarkMode (dark);
-    refBarView.setDarkMode (dark);
-    zoomButton.setDarkMode (dark);
-
-    repaint();
+    if (auto* param = audioProcessor.apvts.getParameter (ParamIDs::goalLevel.getParamID()))
+        param->setValueNotifyingHost (param->convertTo0to1 (db));
+    goalLineView.setGoalLevelDb (db);
 }
 
-void JustifiedLevelControlAudioProcessorEditor::timerCallback()
+void DashboardComponent::updateCustomButtonText (float db)
 {
-    // Logo intro animation (fade + slide-in on launch only)
-    if (logoAnimFrame < logoAnimTotalFrames)
+    if (std::abs (db - (-6.0f)) < 0.01f) // default value
+        targetCustomButton.setButtonText ("Custom");
+    else
+        targetCustomButton.setButtonText (juce::String (db, 1));
+}
+
+void DashboardComponent::timerCallback()
+{
+    ++frameCounter;
+
+    if (introFrame < introTotalFrames)
     {
-        logoAnimFrame++;
-        repaint (refBarView.getBounds());
+        ++introFrame;
+        repaint (logoArea);
     }
 
-    // HIDE button - shows/hides the light-blue goal line on every meter
-    // (spectrum, oscilloscope, LUFS meter) without touching anything else.
+    // HIDE button: show/hide the target line on every meter
     bool showGoalLines = true;
     if (auto* p = audioProcessor.apvts.getRawParameterValue (ParamIDs::showTargetZones.getParamID()))
         showGoalLines = p->load() > 0.5f;
     goalLineView.setVisible (showGoalLines);
     oscilloscopeView.setShowGoalLine (showGoalLines);
     lufsMeterView.setShowGoalLine (showGoalLines);
+    hideGoalLinesButton.setToggleState (! showGoalLines, juce::dontSendNotification);
 
-    // Update Spectrum Engine
+    // Spectrum
     audioProcessor.getScopeData (tempScopeData.data(), tempScopeData.size());
     audioProcessor.getRefScopeData (tempRefData.data(), tempRefData.size());
     spectrumView.updateSpectrumData (tempScopeData.data(), tempRefData.data(), tempScopeData.size());
 
-    // Update Peak Downsampled Oscilloscope
+    // Oscilloscope
     audioProcessor.getOscilloscopeRingData (tempOscData.data(), tempOscData.size(), tempOscWritePos);
     oscilloscopeView.updateOscilloscopeData (tempOscData.data(), tempOscWritePos, tempOscData.size());
 
-    // Update Waveform History for Vectorscope
+    // Vectorscope
     audioProcessor.getWaveformHistoryData (tempLeftWave.data(), tempRightWave.data(), tempLeftWave.size());
-    float corr = audioProcessor.getPhaseCorrelation();
-    vectorscopeView.updateVectorscopeData (tempLeftWave.data(), tempRightWave.data(), tempLeftWave.size(), corr);
+    vectorscopeView.updateVectorscopeData (tempLeftWave.data(), tempRightWave.data(), tempLeftWave.size(),
+                                           audioProcessor.getPhaseCorrelation());
 
-    // Update Loudness Metrics
-    // A/B toggle swaps which numbers are displayed (live vs. the selected
+    // Reference slot state (selection, A/B, loaded dots) - a few times a second is plenty
+    if (frameCounter % 10 == 0)
+        refBarView.refreshFromProcessor();
+
+    // Loudness. A/B swaps which numbers are displayed (live vs. the selected
     // reference's precomputed full-track analysis) - it never alters audio.
     bool abOn = false;
     if (auto* p = audioProcessor.apvts.getRawParameterValue (ParamIDs::abToggle.getParamID()))
@@ -1448,10 +1791,18 @@ void JustifiedLevelControlAudioProcessorEditor::timerCallback()
         highestPeak = audioProcessor.getHighestPeakDb();
     }
 
+    // Keep the goal line in step with the parameter (meter drags, host automation, recall)
+    if (auto* p = audioProcessor.apvts.getRawParameterValue (ParamIDs::goalLevel.getParamID()))
+    {
+        float paramGoal = p->load();
+        if (std::abs (paramGoal - goalLineView.getGoalLevelDb()) > 0.001f)
+            goalLineView.setGoalLevelDb (paramGoal);
+    }
+
     float goalDb = goalLineView.getGoalLevelDb();
 
-    // Check if live frequencies peak over target goal line (-80dB to 12dB range mapping)
-    float goalNorm = juce::jlimit (0.0f, 1.0f, juce::jmap (goalDb, -80.0f, 20.0f, 0.0f, 1.0f));
+    // Does any live frequency peak over the target? (-80..+20 dB display range)
+    float goalNorm = juce::jlimit (0.0f, 1.0f, juce::jmap (goalDb, specMinDb, specMaxDb, 0.0f, 1.0f));
     bool freqExceeded = false;
     for (float mag : tempScopeData)
     {
@@ -1461,134 +1812,145 @@ void JustifiedLevelControlAudioProcessorEditor::timerCallback()
             break;
         }
     }
-    // Update 5-band regional peaks on spectrum analyzer
+
     std::array<float, 5> bandPeaks;
     for (int b = 0; b < 5; ++b)
         bandPeaks[static_cast<size_t> (b)] = audioProcessor.getBandPeakDb (b);
     spectrumView.setBandPeaks (bandPeaks, goalDb);
 
     goalLineView.setPeakExceeded (freqExceeded);
-
     oscilloscopeView.setGoalLevel (goalDb);
     lufsMeterView.setLufsMetrics (lufs, integLufs, currentPeakL, currentPeakR, highestPeak, goalDb);
+
+    // Presets light up when the target matches them
+    float customDb = targetCustomLabel.getText().getFloatValue();
+    bool is14 = std::abs (goalDb + 14.0f) < 0.05f;
+    bool is0  = std::abs (goalDb) < 0.05f;
+    target14Button.setToggleState (is14, juce::dontSendNotification);
+    target0Button.setToggleState (is0, juce::dontSendNotification);
+    targetCustomButton.setToggleState (! is14 && ! is0 && std::abs (goalDb - customDb) < 0.05f, juce::dontSendNotification);
+}
+
+void DashboardComponent::paint (juce::Graphics& g)
+{
+    using namespace Neu;
+
+    g.fillAll (Colours::bg);
+
+    for (auto panel : { headerPanel, spectrumPanel, oscPanel, vecPanel, meterPanel, refPanel })
+        raised (g, panel.toFloat(), 14.0f);
+
+    // Logo (original JLC artwork, untouched) with its fade + slide-in intro
+    if (logoSVG != nullptr)
+    {
+        // SVG viewBox is 171.3 x 22.7
+        const float svgW = 171.3f, svgH = 22.7f;
+        float logoH = 30.0f;
+        float logoW = svgW * logoH / svgH;
+
+        float t = juce::jlimit (0.0f, 1.0f, static_cast<float> (introFrame) / static_cast<float> (introTotalFrames));
+        float eased = 1.0f - std::pow (1.0f - t, 3.0f); // ease-out cubic
+
+        auto area = logoArea.toFloat();
+        float animScale = 0.94f + eased * 0.06f;
+        auto target = juce::Rectangle<float> (area.getX(), area.getCentreY() - logoH * 0.5f + (1.0f - eased) * 6.0f, logoW, logoH);
+        logoSVG->drawWithin (g, target.withSizeKeepingCentre (logoW * animScale, logoH * animScale),
+                             juce::RectanglePlacement::xLeft | juce::RectanglePlacement::yMid, eased);
+    }
+
+    caption (g, "Target", targetCaptionArea, Colours::muted, juce::Justification::centredRight);
+
+    g.setFont (mono (12.0f));
+    g.setColour (Colours::faint);
+    g.drawText ("v1.0.2", versionArea, juce::Justification::centredRight, false);
+}
+
+void DashboardComponent::resized()
+{
+    constexpr int outer = 18, gap = 18;
+
+    auto b = getLocalBounds().reduced (outer);
+    headerPanel = b.removeFromTop (60);
+    b.removeFromTop (gap);
+    refPanel = b.removeFromBottom (64);
+    b.removeFromBottom (gap);
+    meterPanel = b.removeFromRight (226);
+    b.removeFromRight (gap);
+    spectrumPanel = b.removeFromTop (juce::roundToInt (static_cast<float> (b.getHeight()) * 0.6f));
+    b.removeFromTop (gap);
+    oscPanel = b.removeFromLeft ((b.getWidth() - gap) / 2);
+    b.removeFromLeft (gap);
+    vecPanel = b;
+
+    spectrumView.setBounds (spectrumPanel);
+    goalLineView.setBoundsAndRange (spectrumView.getPlotBounds() + spectrumPanel.getPosition(), specMinDb, specMaxDb);
+    oscilloscopeView.setBounds (oscPanel);
+    vectorscopeView.setBounds (vecPanel);
+    lufsMeterView.setBounds (meterPanel);
+    refBarView.setBounds (refPanel);
+
+    // Header: wordmark left; target presets, hide, zoom and version right
+    auto h = headerPanel.reduced (20, 0).withSizeKeepingCentre (headerPanel.getWidth() - 40, 36);
+    versionArea = h.removeFromRight (52);
+    h.removeFromRight (14);
+    zoomButton.setBounds (h.removeFromRight (36).expanded (Neu::buttonPad));
+    h.removeFromRight (16);
+    hideGoalLinesButton.setBounds (h.removeFromRight (84).expanded (Neu::buttonPad));
+    h.removeFromRight (28);
+
+    auto customRect = h.removeFromRight (100).expanded (Neu::buttonPad);
+    targetCustomButton.setBounds (customRect);
+    targetCustomLabel.setBounds (customRect);
+    h.removeFromRight (12);
+    target0Button.setBounds (h.removeFromRight (60).expanded (Neu::buttonPad));
+    h.removeFromRight (12);
+    target14Button.setBounds (h.removeFromRight (60).expanded (Neu::buttonPad));
+    h.removeFromRight (14);
+    targetCaptionArea = h.removeFromRight (70);
+
+    logoArea = h;
+}
+
+//==============================================================================
+// JustifiedLevelControlAudioProcessorEditor
+//==============================================================================
+JustifiedLevelControlAudioProcessorEditor::JustifiedLevelControlAudioProcessorEditor (JustifiedLevelControlAudioProcessor& p)
+    : AudioProcessorEditor (&p), dashboard (p)
+{
+    setLookAndFeel (&neuLF);
+    setOpaque (true);
+
+    addAndMakeVisible (dashboard);
+
+    constexpr int baseW = DashboardComponent::designWidth;
+    constexpr int baseH = DashboardComponent::designHeight;
+
+    dashboard.onZoomToggled = [this] (bool zoomedOut) {
+        float scale = zoomedOut ? 0.5f : 1.0f;
+        setSize (juce::roundToInt (baseW * scale), juce::roundToInt (baseH * scale));
+    };
+
+    setResizable (true, true);
+    setResizeLimits (baseW / 2, baseH / 2, baseW * 3 / 2, baseH * 3 / 2);
+    getConstrainer()->setFixedAspectRatio (static_cast<double> (baseW) / static_cast<double> (baseH));
+    setSize (baseW, baseH);
+}
+
+JustifiedLevelControlAudioProcessorEditor::~JustifiedLevelControlAudioProcessorEditor()
+{
+    setLookAndFeel (nullptr);
 }
 
 void JustifiedLevelControlAudioProcessorEditor::paint (juce::Graphics& g)
-{    // Main Plugin Window Paint
-    // Always Dark Mode
-    juce::ColourGradient bgGrad (
-        juce::Colour (0xff1c1c1e), static_cast<float> (getLocalBounds().getCentreX()), static_cast<float> (getLocalBounds().getCentreY()),
-        juce::Colour (0xff000000), 0.0f, 0.0f, true
-    );
-    g.setGradientFill (bgGrad);
-    g.fillAll();
-
-    // No dedicated header bar anymore - that space belongs to the spectrum
-    // analyzer's extra headroom above unity. The logo, version, and zoom
-    // control live on the reference bar itself (see paintOverChildren()),
-    // so they render cleanly on top of that panel instead of behind it.
-}
-
-void JustifiedLevelControlAudioProcessorEditor::paintOverChildren (juce::Graphics& g)
 {
-    auto barBounds = refBarView.getBounds();
-    if (barBounds.isEmpty())
-        return;
-
-    // Right-hand gutter of the reference bar, reserved by
-    // ReferenceBarComponent::resized() for this overlay: zoom button (drawn
-    // by itself, positioned below), then logo, then version text.
-    auto gutter = barBounds.removeFromRight (390).reduced (10, 3);
-    gutter.removeFromLeft (32 + 10); // space already occupied by zoomButton
-    auto row = gutter;
-
-    if (logoSVG != nullptr)
-    {
-        // SVG dimensions are roughly 171 x 22 based on viewBox
-        float svgW = 171.3f;
-        float svgH = 22.7f;
-
-        // Sized close to the bar's own height (minus a touch of padding)
-        float logoH = static_cast<float> (barBounds.getHeight()) - 6.0f;
-        float logoScale = logoH / svgH;
-        float logoW = svgW * logoScale;
-
-        float targetX = static_cast<float> (row.getRight()) - logoW;
-        float targetY = static_cast<float> (row.getCentreY()) - logoH * 0.5f;
-
-        // Intro animation: fade + slight scale/slide-in on launch. The logo
-        // artwork itself is untouched - only its opacity/position animate.
-        float t = juce::jlimit (0.0f, 1.0f, static_cast<float> (logoAnimFrame) / static_cast<float> (logoAnimTotalFrames));
-        float eased = 1.0f - std::pow (1.0f - t, 3.0f); // ease-out cubic
-
-        float drawY = targetY + (1.0f - eased) * 6.0f;
-        float animScale = 0.94f + eased * 0.06f;
-        float scaledW = logoW * animScale;
-        float scaledH = logoH * animScale;
-        float scaledX = targetX - (scaledW - logoW) * 0.5f;
-        float scaledY = drawY - (scaledH - logoH) * 0.5f;
-
-        logoSVG->drawWithin (g, juce::Rectangle<float> (scaledX, scaledY, scaledW, scaledH), juce::RectanglePlacement::xRight | juce::RectanglePlacement::yMid, eased);
-
-        row.removeFromRight (static_cast<int> (logoW) + 12);
-    }
-
-    g.setFont (juce::FontOptions (11.0f));
-    g.setColour (juce::Colours::grey.withAlpha (0.55f));
-    g.drawText ("v1.0.1", row, juce::Justification::centredRight, false);
+    g.fillAll (Neu::Colours::bg);
 }
 
 void JustifiedLevelControlAudioProcessorEditor::resized()
 {
-    auto bounds = getLocalBounds().reduced (14);
-
-    int refBarHeight = 44;
-    refBarView.setBounds (bounds.removeFromBottom (refBarHeight));
-    bounds.removeFromBottom (10);
-
-    int rightPaneWidth = 145;
-    auto rightPaneArea = bounds.removeFromRight (rightPaneWidth);
-
-    bounds.removeFromRight (10);
-
-    // Top-left to bottom-right reading order: HIDE, 0, -14, CUSTOM
-    auto presetBtnArea = rightPaneArea.removeFromTop (38);
-    auto row1 = presetBtnArea.removeFromTop (18);
-    hideGoalLinesButton.setBounds (row1.removeFromLeft (rightPaneWidth / 2 - 2));
-    target0Button.setBounds (row1.removeFromRight (rightPaneWidth / 2 - 2));
-
-    presetBtnArea.removeFromTop (2); // gap
-    auto row2 = presetBtnArea.removeFromTop (18);
-    target14Button.setBounds (row2.removeFromLeft (rightPaneWidth / 2 - 2));
-    
-    auto customRect = row2.removeFromRight (rightPaneWidth / 2 - 2);
-    targetCustomButton.setBounds (customRect);
-    targetCustomLabel.setBounds (customRect);
-
-    rightPaneArea.removeFromTop (8);
-    lufsMeterView.setBounds (rightPaneArea);
-
-    auto centerArea = bounds;
-
-    int topSpectrumHeight = juce::roundToInt (centerArea.getHeight() * 0.60f);
-    auto spectrumArea = centerArea.removeFromTop (topSpectrumHeight);
-
-    spectrumView.setBounds (spectrumArea);
-    goalLineView.setBoundsAndRange (spectrumArea, -80.0f, 20.0f);
-
-    centerArea.removeFromTop (10);
-
-    int splitWidth = (centerArea.getWidth() - 10) / 2;
-
-    auto oscArea = centerArea.removeFromLeft (splitWidth);
-    auto vecArea = centerArea;
-
-    oscilloscopeView.setBounds (oscArea);
-    vectorscopeView.setBounds (vecArea);
-
-    // Zoom button sits in the gutter ReferenceBarComponent::resized() reserves
-    // on the right of the reference bar; logo/version text (paintOverChildren)
-    // fill the rest of that same gutter.
-    auto zoomGutter = refBarView.getBounds().removeFromRight (390).reduced (10, 8);
-    zoomButton.setBounds (zoomGutter.removeFromLeft (32));
+    // The dashboard is laid out once at design size and scaled uniformly,
+    // so every panel keeps its proportions at any window size.
+    float scale = static_cast<float> (getWidth()) / static_cast<float> (DashboardComponent::designWidth);
+    dashboard.setBounds (0, 0, DashboardComponent::designWidth, DashboardComponent::designHeight);
+    dashboard.setTransform (juce::AffineTransform::scale (scale));
 }

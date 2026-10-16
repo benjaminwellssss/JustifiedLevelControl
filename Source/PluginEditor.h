@@ -3,7 +3,80 @@
 #include "PluginProcessor.h"
 
 //==============================================================================
-// Goal Line Component (Draggable LUFS Target Limit Line)
+// Dark Kinetic Neumorphism design system
+//
+// Surfaces are moulded from the background: raised things carry a dark
+// bottom-right shadow plus a faint light top-left one; carved things (wells,
+// inputs, pressed buttons) carry the same pair inset. No hard borders - depth
+// comes from light and shadow only. JLC cyan is the single accent.
+//==============================================================================
+namespace Neu
+{
+    namespace Colours
+    {
+        inline const juce::Colour bg         { 0xff16191c };
+        inline const juce::Colour surface    { 0xff1b1f23 };
+        inline const juce::Colour highlight  { 0xff23282d }; // raised: top-left shadow
+        inline const juce::Colour shadow     { 0xff0e1012 }; // raised: bottom-right shadow
+        inline const juce::Colour divider    { 0xff262b30 };
+        inline const juce::Colour well       { 0xff0f1214 }; // near-black strip for data
+        inline const juce::Colour text       { 0xffe3e8e5 };
+        inline const juce::Colour muted      { 0xff8a948f };
+        inline const juce::Colour faint      { 0xff59625d };
+        inline const juce::Colour accent     { 0xff65cbe5 }; // JLC cyan (logo / original spectrum)
+        inline const juce::Colour accentDim  { 0xff3a7180 };
+        inline const juce::Colour accentGlow { 0x5965cbe5 };
+        inline const juce::Colour onAccent   { 0xff061219 };
+        inline const juce::Colour amber      { 0xffffcf7a };
+        inline const juce::Colour danger     { 0xffff5b6b };
+        inline const juce::Colour playhead   { 0xffff4d4d };
+    }
+
+    enum class Weight { regular, bold, black };
+    enum class Depth  { raised, small, floating };
+
+    // Space left around a button's body so its shadows aren't clipped
+    // by the button's own bounds.
+    constexpr int buttonPad = 6;
+
+    juce::Font sans (float height, Weight weight = Weight::bold, float tracking = 0.0f);
+    juce::Font mono (float height, bool bold = false, float tracking = 0.0f);
+
+    // Raised surface: two outer shadows + surface fill.
+    void raised (juce::Graphics&, juce::Rectangle<float> body, float radius,
+                 Depth depth = Depth::raised, juce::Colour fill = Colours::surface);
+
+    // Carved surface: fill + two inner shadows.
+    void inset (juce::Graphics&, juce::Rectangle<float> body, float radius,
+                juce::Colour fill = Colours::bg);
+
+    // Soft coloured glow around a shape (primary buttons, playhead, dots).
+    void glow (juce::Graphics&, const juce::Path& shape, juce::Colour colour, int radius);
+
+    // "▍HEADING" - uppercase, weight 900, short accent bar before the word.
+    // Returns the width used.
+    int sectionHeading (juce::Graphics&, const juce::String& text, juce::Rectangle<int> area);
+
+    // Small tracked uppercase label (readout captions, legends).
+    void caption (juce::Graphics&, const juce::String& text, juce::Rectangle<int> area,
+                  juce::Colour colour = Colours::faint,
+                  juce::Justification just = juce::Justification::centredLeft);
+
+    // Button body styles, set on a button's properties via setStyle().
+    // "default" raised, "primary" solid accent, "chip" pill with dot + key badge,
+    // "seg" compact segment.
+    void setStyle (juce::Button&, const juce::String& style);
+
+    // Rendered shadows are cached per size/scale and shared by every editor
+    // instance, so 60 FPS repaints only blit images.
+    struct ShadowCache
+    {
+        std::map<juce::String, juce::Image> images;
+    };
+}
+
+//==============================================================================
+// Goal Line Component (Draggable LUFS Target Limit Line over the spectrum plot)
 //==============================================================================
 class GoalLineComponent  : public juce::Component
 {
@@ -20,8 +93,7 @@ public:
     void setBoundsAndRange (juce::Rectangle<int> bounds, float minDb, float maxDb);
     float getGoalLevelDb() const { return currentGoalDb; }
     void setGoalLevelDb (float targetDb) { currentGoalDb = targetDb; repaint(); }
-    void setDarkMode (bool dark) { isDark = dark; repaint(); }
-    void setPeakExceeded (bool exceeded) { isExceeded = exceeded; repaint(); }
+    void setPeakExceeded (bool exceeded) { if (isExceeded != exceeded) { isExceeded = exceeded; repaint(); } }
 
     bool hitTest (int x, int y) override
     {
@@ -34,10 +106,8 @@ private:
     float currentGoalDb { -14.0f };
     float minDbLevel { -60.0f };
     float maxDbLevel { 0.0f };
-    juce::Rectangle<int> activeArea;
     bool isHovered { false };
     bool isDragging { false };
-    bool isDark { true };
     bool isExceeded { false };
 
     void updateTargetFromY (int yPos);
@@ -56,12 +126,15 @@ public:
     ~SpectrumAnalyzerComponent() override = default;
 
     void paint (juce::Graphics& g) override;
+    void resized() override;
     void mouseMove (const juce::MouseEvent& event) override;
     void mouseExit (const juce::MouseEvent& event) override;
 
     void updateSpectrumData (const float* newScopeData, const float* refData, size_t size);
     void setBandPeaks (const std::array<float, 5>& bandPeaks, float goalDbThreshold);
-    void setDarkMode (bool dark) { isDark = dark; repaint(); }
+
+    // The carved plot well, in local coordinates (the goal line overlays this).
+    juce::Rectangle<int> getPlotBounds() const { return plotArea; }
 
 private:
     JustifiedLevelControlAudioProcessor& processor;
@@ -73,8 +146,9 @@ private:
     std::array<uint32_t, 5> bandPeakRedTimestampsMs { 0, 0, 0, 0, 0 };
     float currentGoalThresholdDb { -14.0f };
 
+    juce::Rectangle<int> headingArea, plotArea, freqLabelArea;
+
     bool mouseInside { false };
-    bool isDark { true };
     juce::Point<int> mousePos;
 
     juce::String getNoteNameForFrequency (float freqHz) const;
@@ -92,21 +166,22 @@ public:
     ~OscilloscopeComponent() override = default;
 
     void paint (juce::Graphics& g) override;
+    void resized() override;
     void mouseMove (const juce::MouseEvent& event) override;
     void mouseExit (const juce::MouseEvent& event) override;
     void updateOscilloscopeData (const float* ringData, int writePos, size_t size);
-    void setGoalLevel (float goalTargetDb) { goalDb = goalTargetDb; repaint(); }
-    void setDarkMode (bool dark) { isDark = dark; repaint(); }
-    void setShowGoalLine (bool show) { showGoal = show; repaint(); }
+    void setGoalLevel (float goalTargetDb) { goalDb = goalTargetDb; }
+    void setShowGoalLine (bool show) { if (showGoal != show) { showGoal = show; repaint(); } }
 
 private:
     std::array<float, JustifiedLevelControlAudioProcessor::oscRingSize> oscBuffer;
     int writePosition { 0 };
     float goalDb { -14.0f };
-    bool isDark { true };
     bool showGoal { true };
     bool mouseInside { false };
     juce::Point<int> mousePos;
+
+    juce::Rectangle<int> headingArea, waveWell;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OscilloscopeComponent)
 };
@@ -123,19 +198,19 @@ public:
     void paint (juce::Graphics& g) override;
     void resized() override;
     void updateVectorscopeData (const float* left, const float* right, size_t size, float phaseCorr);
-    void setDarkMode (bool dark) { isDark = dark; repaint(); }
 
 private:
     std::array<float, JustifiedLevelControlAudioProcessor::waveHistorySize> leftBuffer;
     std::array<float, JustifiedLevelControlAudioProcessor::waveHistorySize> rightBuffer;
     float currentPhaseCorrelation { 1.0f };
-    float currentZoom { 1.0f };
-    bool isDark { true };
+    float currentZoom { 2.0f };
 
     juce::TextButton zoom05Button { ".5x" };
     juce::TextButton zoom10Button { "1x" };
     juce::TextButton zoom20Button { "2x" };
     juce::TextButton zoom40Button { "4x" };
+
+    juce::Rectangle<int> headingArea, scopeWell, corrArea;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (VectorscopeComponent)
 };
@@ -143,18 +218,20 @@ private:
 //==============================================================================
 // Vertical VU / LUFS Loudness Panel Component
 //==============================================================================
-class VerticalLufsMeterComponent  : public juce::Component
+class VerticalLufsMeterComponent  : public juce::Component,
+                                    public juce::SettableTooltipClient
 {
 public:
     VerticalLufsMeterComponent (JustifiedLevelControlAudioProcessor& p);
     ~VerticalLufsMeterComponent() override = default;
 
     void paint (juce::Graphics& g) override;
+    void resized() override;
     void mouseDown (const juce::MouseEvent& event) override;
     void mouseDrag (const juce::MouseEvent& event) override;
+    void mouseMove (const juce::MouseEvent& event) override;
     void setLufsMetrics (float shortTermLufs, float integLufs, float currentPeakL, float currentPeakR, float highestPeak, float goalTargetDb);
-    void setDarkMode (bool dark) { isDark = dark; repaint(); }
-    void setShowGoalLine (bool show) { showGoal = show; repaint(); }
+    void setShowGoalLine (bool show) { if (showGoal != show) { showGoal = show; repaint(); } }
 
     static float getNormYFromDb (float db);
     static float getDbFromNormY (float normY);
@@ -166,16 +243,15 @@ private:
     float currentPeakValL { -100.0f };
     float currentPeakValR { -100.0f };
     float highestPeakVal { -100.0f };
-    float truePeakDb { -100.0f };
     float goalDb { -14.0f };
-
-    float peakHoldDb { -100.0f };
-    int peakHoldTimer { 0 };
-    bool isDark { true };
     bool showGoal { true };
 
     juce::String cachedCurrentLufsText { "-INF" };
     uint32_t lastLufsTextUpdateMs { 0 };
+
+    juce::Rectangle<int> headingArea, readoutArea, tickArea, channelLabelArea;
+    juce::Rectangle<float> meterBarArea;
+    std::array<juce::Rectangle<int>, 4> readoutCells;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (VerticalLufsMeterComponent)
 };
@@ -190,28 +266,31 @@ public:
     ~ReferenceBarComponent() override = default;
 
     void paint (juce::Graphics& g) override;
-    void paintOverChildren (juce::Graphics& g) override;
     void resized() override;
-    void setDarkMode (bool dark) { isDark = dark; repaint(); }
+
+    // Pulls slot selection, A/B state and loaded dots from the processor
+    // (host automation, session recall, async file analysis).
+    void refreshFromProcessor();
 
 private:
     JustifiedLevelControlAudioProcessor& processor;
 
     juce::TextButton slotButtons[4];
-    juce::TextButton loadRefButton { "+ LOAD REF" };
-    juce::ToggleButton abToggleButton { "LIVE / REF A/B" };
+    juce::TextButton loadRefButton { "Load Ref" };
+    juce::ToggleButton abToggleButton { "A/B Ref" };
 
     std::unique_ptr<juce::FileChooser> fileChooser;
-    juce::Rectangle<int> readoutArea;
-    bool isDark { true };
+    juce::Rectangle<int> headingArea, readoutArea;
+
+    int getSelectedSlot() const;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ReferenceBarComponent)
 };
 
 //==============================================================================
-// Zoom Toggle Button - a single magnifying-glass icon replacing separate
-// 50%/100% text buttons. Toggle state true = currently zoomed out (50%),
-// so the glyph inside the lens shows the "+" you'd click to zoom back in.
+// Zoom Toggle Button - magnifying-glass icon. Toggle state true = currently
+// zoomed out (50%), so the glyph inside the lens shows the "+" you'd click
+// to zoom back in.
 //==============================================================================
 class ZoomToggleButton : public juce::Button
 {
@@ -221,177 +300,84 @@ public:
         setClickingTogglesState (true);
     }
 
-    void setDarkMode (bool dark) { isDark = dark; repaint(); }
-
-    void paintButton (juce::Graphics& g, bool isMouseOverButton, bool isButtonDown) override
-    {
-        auto bounds = getLocalBounds().toFloat();
-        float cornerSize = std::min (bounds.getWidth(), bounds.getHeight()) * 0.5f;
-
-        juce::Colour baseCol = isDark
-            ? juce::Colour (0xffffffff).withAlpha (isButtonDown ? 0.12f : (isMouseOverButton ? 0.08f : 0.04f))
-            : juce::Colour (0xff000000).withAlpha (isButtonDown ? 0.09f : (isMouseOverButton ? 0.06f : 0.03f));
-        juce::Colour borderCol = isDark ? juce::Colour (0xffffffff).withAlpha (0.1f) : juce::Colour (0xff000000).withAlpha (0.1f);
-        juce::Colour iconCol = isDark ? juce::Colour (0xff94a3b8) : juce::Colour (0xff475569);
-
-        g.setColour (baseCol);
-        g.fillRoundedRectangle (bounds, cornerSize);
-        g.setColour (borderCol);
-        g.drawRoundedRectangle (bounds, cornerSize, 0.75f);
-
-        auto iconBounds = bounds.reduced (bounds.getWidth() * 0.26f);
-        float lensD = iconBounds.getWidth() * 0.68f;
-        juce::Rectangle<float> lensRect (iconBounds.getX(), iconBounds.getY(), lensD, lensD);
-
-        g.setColour (iconCol);
-        g.drawEllipse (lensRect, 1.6f);
-
-        juce::Point<float> handleStart (lensRect.getRight() - lensD * 0.12f, lensRect.getBottom() - lensD * 0.12f);
-        juce::Point<float> handleEnd = handleStart.translated (lensD * 0.5f, lensD * 0.5f);
-        g.drawLine (juce::Line<float> (handleStart, handleEnd), 1.8f);
-
-        // +/- glyph inside the lens shows which way the next click zooms
-        float glyphHalf = lensD * 0.17f;
-        auto lensCentre = lensRect.getCentre();
-        g.drawLine (lensCentre.x - glyphHalf, lensCentre.y, lensCentre.x + glyphHalf, lensCentre.y, 1.4f);
-        if (getToggleState())
-            g.drawLine (lensCentre.x, lensCentre.y - glyphHalf, lensCentre.x, lensCentre.y + glyphHalf, 1.4f);
-    }
+    void paintButton (juce::Graphics& g, bool isMouseOverButton, bool isButtonDown) override;
 
 private:
-    bool isDark { true };
-
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ZoomToggleButton)
 };
 
 //==============================================================================
-// BluPrint Pill LookAndFeel Design System
+// Neumorphic LookAndFeel
 //==============================================================================
-class BluPrintPillLookAndFeel : public juce::LookAndFeel_V4
+class NeuLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
-    BluPrintPillLookAndFeel()
-    {
-        updateColours (true);
-    }
-    ~BluPrintPillLookAndFeel() override = default;
+    NeuLookAndFeel();
+    ~NeuLookAndFeel() override = default;
 
-    void updateColours (bool dark)
-    {
-        isDark = dark;
-        if (isDark)
-        {
-            setColour (juce::TextButton::buttonColourId, juce::Colour (0xffffffff).withAlpha (0.04f));
-            setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xe600f0ff));
-            setColour (juce::TextButton::textColourOffId, juce::Colour (0xff94a3b8));
-            setColour (juce::TextButton::textColourOnId, juce::Colours::black);
-        }
-        else
-        {
-            setColour (juce::TextButton::buttonColourId, juce::Colour (0xff000000).withAlpha (0.03f));
-            setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xe60284c7));
-            setColour (juce::TextButton::textColourOffId, juce::Colour (0xff475569));
-            setColour (juce::TextButton::textColourOnId, juce::Colours::white);
-        }
-    }
+    void drawButtonBackground (juce::Graphics&, juce::Button&, const juce::Colour& backgroundColour,
+                               bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown) override;
+    void drawButtonText (juce::Graphics&, juce::TextButton&,
+                         bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown) override;
+    void drawToggleButton (juce::Graphics&, juce::ToggleButton&,
+                           bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown) override;
 
-    void drawButtonBackground (juce::Graphics& g, juce::Button& button, const juce::Colour& backgroundColour,
-                                bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown) override
-    {
-        juce::ignoreUnused (backgroundColour);
-        auto bounds = button.getLocalBounds().toFloat();
-        float cornerSize = std::min (bounds.getWidth(), bounds.getHeight()) * 0.5f;
+    void drawLabel (juce::Graphics&, juce::Label&) override;
+    juce::Font getLabelFont (juce::Label&) override;
+    void fillTextEditorBackground (juce::Graphics&, int width, int height, juce::TextEditor&) override;
+    void drawTextEditorOutline (juce::Graphics&, int width, int height, juce::TextEditor&) override;
 
-        bool isToggled = button.getToggleState();
-        bool isDown = shouldDrawButtonAsDown;
-
-        juce::Colour baseCol;
-        juce::Colour borderCol;
-
-        if (isDark)
-        {
-            baseCol = isToggled ? juce::Colour (0xe600f0ff) :
-                      (shouldDrawButtonAsHighlighted ? juce::Colour (0xffffffff).withAlpha (0.08f) : juce::Colour (0xffffffff).withAlpha (0.04f));
-            borderCol = isToggled ? juce::Colour (0xff00ffff) :
-                        (shouldDrawButtonAsHighlighted ? juce::Colour (0xffffffff).withAlpha (0.2f) : juce::Colour (0xffffffff).withAlpha (0.1f));
-        }
-        else
-        {
-            baseCol = isToggled ? juce::Colour (0xe60284c7) :
-                      (shouldDrawButtonAsHighlighted ? juce::Colour (0xff000000).withAlpha (0.06f) : juce::Colour (0xff000000).withAlpha (0.03f));
-            borderCol = isToggled ? juce::Colour (0xff0284c7) :
-                        (shouldDrawButtonAsHighlighted ? juce::Colour (0xff000000).withAlpha (0.15f) : juce::Colour (0xff000000).withAlpha (0.1f));
-        }
-
-        if (isDown)
-            baseCol = baseCol.brighter (0.15f);
-
-        g.setColour (baseCol);
-        g.fillRoundedRectangle (bounds, cornerSize);
-
-        g.setColour (borderCol);
-        g.drawRoundedRectangle (bounds, cornerSize, 0.75f);
-    }
-
-    void drawButtonText (juce::Graphics& g, juce::TextButton& button, bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown) override
-    {
-        juce::ignoreUnused (shouldDrawButtonAsHighlighted, shouldDrawButtonAsDown);
-        juce::Font font (juce::FontOptions (12.5f, juce::Font::bold));
-        g.setFont (font);
-        g.setColour (button.findColour (button.getToggleState() ? juce::TextButton::textColourOnId : juce::TextButton::textColourOffId));
-
-        g.drawText (button.getButtonText(), button.getLocalBounds(), juce::Justification::centred, false);
-    }
+    juce::Rectangle<int> getTooltipBounds (const juce::String& tipText, juce::Point<int> screenPos, juce::Rectangle<int> parentArea) override;
+    void drawTooltip (juce::Graphics&, const juce::String& text, int width, int height) override;
 
 private:
-    bool isDark { true };
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (NeuLookAndFeel)
 };
 
 //==============================================================================
-// Main Plugin Editor (Justified Level Control Dashboard)
+// Dashboard - the whole UI laid out at a fixed design size (1200 x 820). The
+// editor scales it uniformly to whatever size the window is.
 //==============================================================================
-class JustifiedLevelControlAudioProcessorEditor  : public juce::AudioProcessorEditor,
-                                                 private juce::Timer
+class DashboardComponent : public juce::Component,
+                           private juce::Timer
 {
 public:
-    JustifiedLevelControlAudioProcessorEditor (JustifiedLevelControlAudioProcessor&);
-    ~JustifiedLevelControlAudioProcessorEditor() override;
+    static constexpr int designWidth  = 1200;
+    static constexpr int designHeight = 820;
+
+    DashboardComponent (JustifiedLevelControlAudioProcessor&);
+    ~DashboardComponent() override;
 
     void paint (juce::Graphics&) override;
-    void paintOverChildren (juce::Graphics&) override;
     void resized() override;
+
+    std::function<void (bool zoomedOut)> onZoomToggled;
 
 private:
     void timerCallback() override;
-    void updateTheme (bool dark);
+    void setTargetDb (float db);
+    void updateCustomButtonText (float db);
 
     JustifiedLevelControlAudioProcessor& audioProcessor;
 
-    BluPrintPillLookAndFeel bluPrintLF;
-    bool isDarkMode { true };
-
-    // Dashboard Views (Simultaneous Viewport)
     SpectrumAnalyzerComponent spectrumView;
     OscilloscopeComponent oscilloscopeView;
     VectorscopeComponent vectorscopeView;
-
     VerticalLufsMeterComponent lufsMeterView;
     GoalLineComponent goalLineView;
     ReferenceBarComponent refBarView;
 
-    // Target Level Selection Buttons
+    // Target controls (header)
     juce::TextButton target14Button { "-14" };
-    juce::TextButton hideGoalLinesButton { "HIDE" };
     juce::TextButton target0Button { "0" };
-    juce::TextButton targetCustomButton { "CUSTOM" };
+    juce::TextButton targetCustomButton { "Custom" };
     juce::Label targetCustomLabel { "customLabel", "-6.0" };
+    juce::TextButton hideGoalLinesButton { "Hide" };
 
-    // Theme Switcher Buttons (Dark & Light Mode)
-    juce::TextButton darkThemeButton { "DARK" };
-    juce::TextButton lightThemeButton { "LIGHT" };
-
-    // UI Scale Toggle (50% / 100%, single magnifying-glass icon button)
     ZoomToggleButton zoomButton;
+
+    juce::Rectangle<int> headerPanel, spectrumPanel, oscPanel, vecPanel, meterPanel, refPanel;
+    juce::Rectangle<int> logoArea, targetCaptionArea, versionArea;
 
     std::array<float, JustifiedLevelControlAudioProcessor::scopeSize> tempScopeData;
     std::array<float, JustifiedLevelControlAudioProcessor::scopeSize> tempRefData;
@@ -399,12 +385,34 @@ private:
     std::array<float, JustifiedLevelControlAudioProcessor::waveHistorySize> tempRightWave;
     std::array<float, JustifiedLevelControlAudioProcessor::oscRingSize> tempOscData;
     int tempOscWritePos { 0 };
-    
+    int frameCounter { 0 };
+
     std::unique_ptr<juce::Drawable> logoSVG;
 
-    // Logo intro animation (fade + slide-in on launch, logo artwork itself untouched)
-    static constexpr int logoAnimTotalFrames = 40;
-    int logoAnimFrame { 0 };
+    // Logo intro animation (fade + slide-in on launch)
+    static constexpr int introTotalFrames = 40;
+    int introFrame { 0 };
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DashboardComponent)
+};
+
+//==============================================================================
+// Main Plugin Editor (Justified Level Control)
+//==============================================================================
+class JustifiedLevelControlAudioProcessorEditor  : public juce::AudioProcessorEditor
+{
+public:
+    JustifiedLevelControlAudioProcessorEditor (JustifiedLevelControlAudioProcessor&);
+    ~JustifiedLevelControlAudioProcessorEditor() override;
+
+    void paint (juce::Graphics&) override;
+    void resized() override;
+
+private:
+    juce::SharedResourcePointer<Neu::ShadowCache> shadowCache;
+    NeuLookAndFeel neuLF;
+    DashboardComponent dashboard;
+    juce::TooltipWindow tooltipWindow { this, 600 };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (JustifiedLevelControlAudioProcessorEditor)
 };
