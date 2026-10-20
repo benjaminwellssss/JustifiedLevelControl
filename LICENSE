@@ -1,0 +1,9 @@
+Copyright (c) 2026 benjaminwellssss. All rights reserved.
+
+This source code is published for viewing and reference only. No license is
+granted to copy, modify, distribute, sublicense, or sell this software or any
+part of it, in source or binary form, without prior written permission from
+the copyright holder.
+
+Third-party components keep their own licenses:
+- JUCE (https://juce.com), fetched at build time, under the JUCE license.

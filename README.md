@@ -1,104 +1,50 @@
-# Justified Level Control (JLC) Audio Plugin (VST3 / AU)
+# Justified Level Control (JLC)
 
-A master chain monitoring utility audio plugin built in C++ using the **JUCE framework** (v8.0+). Inspired by the clinical dark vector aesthetic of *Youlean Loudness Meter 2*, this plugin combines a real-time FFT spectrum analyzer, true RMS/LUFS loudness metering, scrolling oscilloscope, vectorscope, and dynamic interactive goal line.
+**A master-bus loudness and spectrum meter, as a VST3 / AU plugin.**
 
----
+JLC puts everything you need to hit a loudness target on one screen: a live spectrum analyzer, true-peak and LUFS metering, an oscilloscope, a vectorscope, and A/B reference tracks. One draggable **target line** ties it together, so you can see at a glance when any part of the mix goes over.
 
-## Key Features
+![Justified Level Control](docs/screenshot.png)
 
-- **Real-Time FFT Spectrum Analyzer**: 2048-point FFT with Hann windowing rendered with translucent pure cyan gradients across a logarithmic 20 Hz – 20 kHz frequency scale.
-- **ITU-R BS.1770 LUFS / RMS Meter**: Accurate short-term loudness calculation with K-weighting pre-filtering.
-- **Stereo L/R Split Metering**: Independent Left/Right channel volume tracking with dual side-by-side vertical meters.
-- **Draggable Target Goal Line**: Interactive horizontal target line (default `-14.0 LUFS`). Drag vertically across the UI to set target limits.
-- **Scrolling Oscilloscope & Vectorscope**: Real-time waveform scrolling and stereo phase correlation vectorscope.
-- **Comprehensive Tooltip & Theme Support**: Integrated light/dark theme switcher and scaling controls.
+## Features
 
----
+- **Spectrum analyzer.** 2048-point FFT on a log 20 Hz – 20 kHz scale, with a 5-second peak-hold trace and an overlay of the reference track. Five frequency zones (Sub, Bass, Low Mid, High Mid, Highs) each show their peak, which turns red when it goes over target. Hover for a crosshair readout of frequency, level and musical note.
+- **Loudness.** ITU-R BS.1770 short-term and integrated LUFS, current peak, and 4× oversampled true peak, plus stereo L/R meters on a non-linear scale. Click the readouts to reset the peak hold.
+- **Target line.** Drag it on the spectrum or the meter, or use the **-14** / **0** / **Custom** presets. It shows on every view, turns red when you're over, and **Hide** turns it off.
+- **Oscilloscope** with auto gain, and a **vectorscope** with .5× – 4× zoom and a phase-correlation bar.
+- **Reference tracks.** Four slots (WAV, AIFF, MP3, FLAC). Each track is analysed in full, and **A/B Ref** swaps the readouts to the reference's numbers. Metering only: the audio is never changed.
+- **Scalable UI.** The window resizes from 50% to 150% and keeps its proportions.
 
-## Project Structure
+## Building
 
-```
-JustifiedLevelControl/
-├── CMakeLists.txt              # Cross-platform CMake setup with JUCE FetchContent
-├── README.md                   # Build and compilation guide
-└── Source/
-    ├── PluginProcessor.h       # Audio Processor DSP, FIFO, FFT engine, LUFS calculation
-    ├── PluginProcessor.cpp     # K-weighting filter, processBlock, FFT spectrum generator
-    ├── PluginEditor.h          # GUI headers & sub-components (Spectrum, VU Meter, Goal Line)
-    └── PluginEditor.cpp        # 60 FPS vector renderer, interactive goal line drag, tooltips
-```
-
----
-
-## Build Prerequisites
-
-1. **CMake**: Version 3.22 or higher.
-2. **C++17 Compiler**:
-   - **Windows**: Visual Studio 2022 (with "Desktop development with C++" workload) or MinGW-w64.
-   - **macOS**: Xcode 14+ or Command Line Tools (`xcode-select --install`).
-3. **Git**: Required by CMake `FetchContent` to download JUCE automatically during the build.
-
----
-
-## Compilation Instructions
-
-### 1. Building on Windows (VST3)
-
-Open **PowerShell** or **Command Prompt** in the project folder:
-
-```powershell
-# Navigate to the project folder
-cd path\to\JustifiedLevelControl
-
-# Create a build directory
-mkdir build
-cd build
-
-# Generate Visual Studio 2022 solution / CMake build files
-cmake .. -G "Visual Studio 17 2022" -A x64
-
-# Compile the VST3 plugin in Release mode
-cmake --build . --config Release
-```
-
-After building:
-- The compiled VST3 plugin will be located in: `build/JustifiedLevelControl_artefacts/Release/VST3/Justified Level Control.vst3`
-- Copy `Justified Level Control.vst3` into your Windows VST3 directory:
-  `C:\Program Files\Common Files\VST3\`
-
----
-
-### 2. Building on macOS (VST3 & Audio Unit / AU)
-
-Open **Terminal** in the project folder:
+Requirements: CMake 3.22+, a C++17 compiler (Xcode / Command Line Tools on macOS, Visual Studio 2022 on Windows) and Git. JUCE 8.0.0 is downloaded automatically by CMake.
 
 ```bash
-# Navigate to the project folder
-cd /path/to/JustifiedLevelControl
-
-# Create a build directory
-mkdir build
-cd build
-
-# Generate Xcode project or Makefile
-cmake .. -G Xcode
-
-# Build both VST3 and AU targets in Release mode
-cmake --build . --config Release
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
 ```
 
-After building:
-- **VST3 output**: `build/JustifiedLevelControl_artefacts/Release/VST3/Justified Level Control.vst3`
-  - Install location: `~/Library/Audio/Plug-Ins/VST3/` or `/Library/Audio/Plug-Ins/VST3/`
-- **Audio Unit (AU) output**: `build/JustifiedLevelControl_artefacts/Release/AU/Justified Level Control.component`
-  - Install location: `~/Library/Audio/Plug-Ins/Components/` or `/Library/Audio/Plug-Ins/Components/`
+On Windows, add `-G "Visual Studio 17 2022" -A x64` to the first command.
 
----
+Outputs land in `build/JustifiedLevelControl_artefacts/Release/` (`VST3/`, `AU/` on macOS, and `Standalone/`). Copy the plugin into your system plugin folder:
 
-## Testing in DAWs
+| Format | Location |
+|---|---|
+| VST3 (Windows) | `C:\Program Files\Common Files\VST3\` |
+| VST3 (macOS) | `/Library/Audio/Plug-Ins/VST3/` |
+| AU (macOS) | `/Library/Audio/Plug-Ins/Components/` |
 
-1. Copy the built `.vst3` (or `.component` on macOS) file to your system plugin folder.
-2. Open your DAW (e.g. Ableton Live, FL Studio, Reaper, Logic Pro, Cubase).
-3. Rescan your VST3/AU plugins in the DAW preferences.
-4. Insert **Justified Level Control** on your master channel.
-5. Drag the cyan Goal Line vertically to customize your LUFS target level. Observe the meter turn red when master audio exceeds your target!
+Then rescan plugins in your DAW and insert **Justified Level Control** on the master bus.
+
+### macOS helpers
+
+- `./run-standalone.sh` rebuilds the standalone app and launches it, for quick UI iteration without a DAW.
+- `./build-installer.sh` builds the AU and VST3 and packages them into `build/JustifiedLevelControl.pkg` with [Packages](http://s.sudre.free.fr/Software/Packages/about.html).
+
+## Notes
+
+Built with [JUCE](https://juce.com) under its own license terms.
+
+## License
+
+Copyright © 2026 benjaminwellssss. All rights reserved. The source is published for viewing only; see [LICENSE](LICENSE).
